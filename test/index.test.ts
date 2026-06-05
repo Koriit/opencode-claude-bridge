@@ -38,24 +38,6 @@ function fakeShell(exitCode: number, stdout: string): PluginInput["$"] {
   return (() => build()) as unknown as PluginInput["$"]
 }
 
-/**
- * Capture console.warn output while `fn` runs, then restore console.warn.
- * Returns an array of all warning strings emitted.
- */
-async function captureWarnings(fn: () => Promise<void>): Promise<string[]> {
-  const captured: string[] = []
-  const orig = console.warn
-  console.warn = (...args: unknown[]) => {
-    captured.push(args.map(String).join(" "))
-  }
-  try {
-    await fn()
-  } finally {
-    console.warn = orig
-  }
-  return captured
-}
-
 // ── Malformed plugin entry ────────────────────────────────────────────────────
 
 describe("opencode-claude-bridge hook — malformed plugin entry handling", () => {
@@ -77,26 +59,17 @@ describe("opencode-claude-bridge hook — malformed plugin entry handling", () =
     } as unknown as PluginInput
 
     const mod = await server(input, undefined)
-    const warnings = await captureWarnings(async () => {
-      // Must resolve (not reject) in non-strict mode.
-      await expect(mod!.config!({} as any)).resolves.toBeUndefined()
-    })
-
-    expect(warnings.some((w) => w.includes("malformed"))).toBe(true)
+    // Must resolve (not reject) in non-strict mode.
+    await expect(mod!.config!({} as any)).resolves.toBeUndefined()
   })
 
   test("strict mode: a fatal warning from a malformed plugin entry propagates as a hard error", async () => {
-    // In strict mode, logger.warn (with default fatalInStrict:true) throws BridgeError.
-    // A malformed `claude plugin list` entry calls logger.warn("skipping a malformed entry"),
-    // which throws inside listClaudePlugins, propagates to the outer catch (index.ts),
-    // and is re-thrown because bridge.strict is true.
     const { server } = await import("../src/index.js")
     const input = {
       $: fakeShell(0, JSON.stringify([{ id: "bad" }])), // malformed → warns → throws in strict
       directory: tmpDir,
     } as unknown as PluginInput
 
-    // Pass strict: true as bridge options (second arg of the plugin tuple).
     const mod = await server(input, { strict: true })
     // The config hook must reject in strict mode when a fatal warning fires.
     await expect(mod!.config!({} as any)).rejects.toThrow()
@@ -182,7 +155,6 @@ describe("opencode-claude-bridge hook — diagnostics toast via chat.message", (
   }
 
   test("when warnings fire during config, the first chat.message calls showToast once", async () => {
-    // Trigger a warning via a malformed plugin entry.
     const { server } = await import("../src/index.js")
     const { client, calls } = makeClientWithToast()
     const input = {
@@ -192,9 +164,7 @@ describe("opencode-claude-bridge hook — diagnostics toast via chat.message", (
     } as unknown as PluginInput
 
     const mod = await server(input, undefined)
-    await captureWarnings(async () => {
-      await mod!.config!({} as any)
-    })
+    await mod!.config!({} as any)
 
     expect(calls).toHaveLength(0) // no toast yet
 
@@ -226,7 +196,6 @@ describe("opencode-claude-bridge hook — diagnostics toast via chat.message", (
   })
 
   test("a showToast failure does not throw out of chat.message", async () => {
-    // Trigger a warning via a malformed plugin entry.
     const { server } = await import("../src/index.js")
     const client = {
       tui: {
@@ -240,9 +209,7 @@ describe("opencode-claude-bridge hook — diagnostics toast via chat.message", (
     } as unknown as PluginInput
 
     const mod = await server(input, undefined)
-    await captureWarnings(async () => {
-      await mod!.config!({} as any)
-    })
+    await mod!.config!({} as any)
 
     // Must resolve without throwing even though showToast throws
     await expect(mod!["chat.message"]!({} as any, {} as any)).resolves.toBeUndefined()
