@@ -5,7 +5,7 @@ import { injectCommandsAndAgents } from "./inject.js"
 import { injectSkills } from "./skill-inject.js"
 import { injectMcp } from "./mcp-inject.js"
 import { injectLsp } from "./lsp-inject.js"
-import { createLogger, type LoggingClient } from "./logger.js"
+import { createLogger } from "./logger.js"
 import { listClaudePlugins, selectEnabledPlugins } from "./selection.js"
 import { collectExistingSkillNames } from "./skill-scan.js"
 
@@ -51,7 +51,7 @@ export const server: Plugin = async (_input, options) => {
 
   return {
     config: async (cfg) => {
-      const logger = createLogger(bridge.strict, _input.client as unknown as LoggingClient)
+      const logger = createLogger(bridge.strict)
       try {
         // Replay parse-time validation warnings (strict-promotable).
         for (const w of warnings) logger.warn(w)
