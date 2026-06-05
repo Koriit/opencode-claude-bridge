@@ -35,13 +35,13 @@ passes against a new version.
 ## Install
 
 Add the plugin to your **global** `~/.config/opencode/opencode.json` so it applies across all
-projects. Install directly from GitHub — no build step or `dist/` directory required:
+projects:
 
 ```jsonc
 {
   "plugin": [
     [
-      "github:Koriit/opencode-claude-bridge",
+      "@koriit/opencode-claude-bridge",
       {
         "allowMcp": false,
         "allowLsp": false,
@@ -56,7 +56,7 @@ The bare-string form works too and uses all defaults:
 
 ```jsonc
 {
-  "plugin": ["github:Koriit/opencode-claude-bridge"]
+  "plugin": ["@koriit/opencode-claude-bridge"]
 }
 ```
 
@@ -65,8 +65,13 @@ runs on install. The package entry points at `src/index.ts` intentionally: OpenC
 which imports TypeScript directly. Zero runtime dependencies; all `@opencode-ai/plugin` imports are
 `import type` (erased at runtime).
 
-If/when the package is published to npm, the npm form `"opencode-claude-bridge"` (or the tuple
-`["opencode-claude-bridge", { ... }]`) will also work.
+### Releasing (maintainer)
+
+1. Bump `version` in `package.json`, commit.
+2. Create a GitHub Release with tag `v<version>` (e.g. `v0.1.1`).
+3. The [publish workflow](.github/workflows/publish.yml) runs the test gates and publishes to npm
+   automatically (requires the `NPM_TOKEN` secret to be configured in the repo — see the workflow
+   file header for setup instructions).
 
 ## Configuration
 
