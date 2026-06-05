@@ -35,15 +35,14 @@ passes against a new version.
 ## Install
 
 Add the plugin to your **global** `~/.config/opencode/opencode.json` so it applies across all
-projects. The tuple form carries the bridge's options:
+projects. Install directly from GitHub — no build step or `dist/` directory required:
 
 ```jsonc
 {
   "plugin": [
     [
-      "opencode-claude-bridge",
+      "github:Koriit/opencode-claude-bridge",
       {
-        "mode": "mirror-claude",
         "allowMcp": false,
         "allowLsp": false,
         "blockedPlugins": []
@@ -53,7 +52,21 @@ projects. The tuple form carries the bridge's options:
 }
 ```
 
-The bare-string form (`"plugin": ["opencode-claude-bridge"]`) works too and uses all defaults.
+The bare-string form works too and uses all defaults:
+
+```jsonc
+{
+  "plugin": ["github:Koriit/opencode-claude-bridge"]
+}
+```
+
+**How it works.** OpenCode installs plugins via Arborist with `ignoreScripts: true` — no build step
+runs on install. The package entry points at `src/index.ts` intentionally: OpenCode runs on Bun,
+which imports TypeScript directly. Zero runtime dependencies; all `@opencode-ai/plugin` imports are
+`import type` (erased at runtime).
+
+If/when the package is published to npm, the npm form `"opencode-claude-bridge"` (or the tuple
+`["opencode-claude-bridge", { ... }]`) will also work.
 
 ## Configuration
 
