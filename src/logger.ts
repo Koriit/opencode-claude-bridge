@@ -1,3 +1,5 @@
+import type { PluginInput } from "@opencode-ai/plugin"
+
 /** Thrown when a soft warning is promoted to a hard error under `strict` mode. */
 export class BridgeError extends Error {
   override name = "BridgeError"
@@ -24,14 +26,15 @@ export interface Logger {
   hadWarnings(): boolean
 }
 
+type OpenCodeClient = PluginInput["client"]
+
 /**
- * Internal output logger that writes to process.stderr in OpenCode's structured
- * log format: `LEVEL  ISO-timestamp +Xms service=opencode-claude-bridge <message>`
- *
- * Suppressed when --print-logs is absent — the plugin API has no log facility,
- * so this is the only way to match OpenCode's own log-visibility behaviour.
+ * Fallback output logger used when no real OpenCode client is available (tests,
+ * edge-case early errors). Writes to process.stderr in OpenCode's structured
+ * format and only when --print-logs is in argv — matching OpenCode's own
+ * log-visibility behaviour.
  */
-const log = (() => {
+const fallbackLog = (() => {
   const enabled = process.argv.includes("--print-logs")
   let last = Date.now()
 
@@ -51,21 +54,43 @@ const log = (() => {
 })()
 
 /**
- * Create a logger bound to the resolved `strict` flag. The hook itself is
- * responsible for catching {@link BridgeError} in non-strict paths; in strict
- * mode the error propagates so OpenCode surfaces a hard failure.
+ * Create a logger bound to the resolved `strict` flag and the OpenCode client.
+ *
+ * When a client is provided, log entries are posted to the server via
+ * `client.log()` — they flow through OpenCode's own log pipeline, appear in
+ * the log file, and respect `--print-logs` automatically.
+ *
+ * When no client is provided (tests, early-startup errors) the fallback logger
+ * writes to process.stderr in the same format, gated on `--print-logs`.
  */
-export function createLogger(strict: boolean): Logger {
+export function createLogger(strict: boolean, client?: OpenCodeClient): Logger {
   let warningCount = 0
+
+  function logInfo(msg: string): void {
+    if (typeof client?.log === "function") {
+      void client.log({ service: "opencode-claude-bridge", level: "info", message: msg })
+    } else {
+      fallbackLog.info(msg)
+    }
+  }
+
+  function logWarn(msg: string): void {
+    if (typeof client?.log === "function") {
+      void client.log({ service: "opencode-claude-bridge", level: "warn", message: msg })
+    } else {
+      fallbackLog.warn(msg)
+    }
+  }
+
   return {
     info(msg) {
-      log.info(msg)
+      logInfo(msg)
     },
     warn(msg, opts) {
       const fatalInStrict = opts?.fatalInStrict ?? true
       warningCount++
       if (strict && fatalInStrict) throw new BridgeError(msg)
-      log.warn(msg)
+      logWarn(msg)
     },
     hadWarnings() {
       return warningCount > 0
