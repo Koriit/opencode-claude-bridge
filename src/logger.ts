@@ -28,15 +28,14 @@ export interface Logger {
  * Internal output logger. Writes to process.stderr in OpenCode's structured
  * log format: `LEVEL  ISO-timestamp +Xms service=opencode-claude-bridge <message>`
  *
- * Always writes — no --print-logs gate. The gate (`process.argv.includes`) is
- * unreliable inside Bun Worker threads spawned by the compiled OpenCode binary.
- * OpenCode's TUI captures or discards stray stderr writes anyway; users who want
- * log output redirect stderr explicitly (e.g. `opencode 2>bridge.log`).
+ * Gated on --print-logs to match OpenCode's own log-visibility behaviour.
  */
 const log = (() => {
+  const enabled = process.argv.includes("--print-logs")
   let last = Date.now()
 
   function write(level: "INFO" | "WARN", msg: string): void {
+    if (!enabled) return
     const now = Date.now()
     const ts = new Date(now).toISOString().split(".")[0]
     const diff = now - last
