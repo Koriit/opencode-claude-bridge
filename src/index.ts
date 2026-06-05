@@ -8,7 +8,6 @@ import { injectLsp } from "./lsp-inject.js"
 import { createLogger } from "./logger.js"
 import { listClaudePlugins, selectEnabledPlugins } from "./selection.js"
 import { collectExistingSkillNames } from "./skill-scan.js"
-import { checkVersion, fetchOpencodeVersion } from "./version.js"
 
 /**
  * Parse an environment-variable value as a boolean, matching the set of truthy
@@ -56,10 +55,6 @@ export const server: Plugin = async (_input, options) => {
       try {
         // Replay parse-time validation warnings (strict-promotable).
         for (const w of warnings) logger.warn(w)
-
-        // §9 version-compat advisory (always soft — still attempts injection).
-        const version = await fetchOpencodeVersion(_input.serverUrl)
-        checkVersion(version, logger)
 
         // §5 mirror-claude resolution.
         const all = await listClaudePlugins(_input.$, logger)

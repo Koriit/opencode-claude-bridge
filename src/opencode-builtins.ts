@@ -1,14 +1,5 @@
 /**
- * Version-pinned OpenCode built-in name lists and skill-discovery constants.
- *
- * The runtime OpenCode version verified by the spec is **1.15.10**; the source
- * checkout on this machine is **1.15.13**. The constants were re-confirmed
- * unchanged against the 1.15.13 source — the cited line numbers and values are
- * identical in both versions. The pin below records the runtime version (what
- * users run and what the spec validated against); re-validate on the next upgrade.
- *
- * MUST be re-validated on every OpenCode upgrade — these are part of what the
- * §9 compatibility check guards.
+ * OpenCode built-in name lists and skill-discovery constants.
  *
  * Source locations (all in `packages/opencode/src/`):
  *   - Built-in agents:   `agent/agent.ts:127-248`
@@ -16,11 +7,6 @@
  *   - Built-in skills:   `skill/index.ts:33`
  *   - Skill scan dirs:   `skill/index.ts:22-26, 173-233`
  */
-
-// The single source of truth for the verified OpenCode version is VERIFIED_OPENCODE_VERSION
-// in src/version.ts. Re-export it here so callers in this module don't need a cross-module
-// import, and so the value is never duplicated.
-export { VERIFIED_OPENCODE_VERSION as PINNED_OPENCODE_VERSION } from "./version.js"
 
 // ── Built-in agents ─────────────────────────────────────────────────────────
 //

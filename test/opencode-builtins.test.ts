@@ -7,18 +7,7 @@ import {
   EXTERNAL_SKILL_ROOTS,
   OPENCODE_SKILL_GLOB,
   PATHS_SKILL_GLOB,
-  PINNED_OPENCODE_VERSION,
 } from "../src/opencode-builtins.js"
-
-// These tests serve as a machine-checkable manifest of the version-pinned
-// constants and catch accidental edits. When the pinned version changes, these
-// tests must be updated as part of the §9 re-validation process.
-
-describe("PINNED_OPENCODE_VERSION", () => {
-  test("records the verified version as a semver string", () => {
-    expect(PINNED_OPENCODE_VERSION).toMatch(/^\d+\.\d+\.\d+$/)
-  })
-})
 
 describe("BUILTIN_AGENT_NAMES", () => {
   test("contains all seven built-in agents verified at v1.15.10", () => {
