@@ -25,47 +25,27 @@ export interface Logger {
 }
 
 /**
- * Minimal duck-type for the OpenCode core logger service we resolve at runtime.
- * `@opencode-ai/core` is private/unpublished; we access it via dynamic import
- * against the Bun module registry that the host worker already populated.
- */
-interface CoreLog {
-  create(tags?: Record<string, unknown>): {
-    info(msg: string): void
-    warn(msg: string): void
-  }
-}
-
-/**
  * Resolve the core log module at runtime by hitting Bun's module registry.
- * The Bun Worker that hosts plugins already executed
- *   `import * as Log from "@opencode-ai/core/util/log"`
- * and called `Log.init({ print: ... })`, so the registry holds a fully
- * configured instance. A dynamic import of the same specifier returns it.
  *
- * Falls back to a plain stderr writer if the import fails (tests, non-OpenCode
- * environments) — in that case output is always emitted so tests can capture it.
+ * @opencode-ai/core is private and not on npm, but the host Bun Worker already
+ * executed `import * as Log from "@opencode-ai/core/util/log"` and called
+ * `Log.init({ print: ... })`. A dynamic import of the same specifier returns
+ * the cached, fully-configured instance — so output correctly goes to stderr
+ * (with --print-logs) or the log file (default), with no argv check needed.
+ *
+ * Falls back to direct stderr writes when the import fails (tests, or if the
+ * module path changes in a future OpenCode version).
  */
-async function resolveCoreLog(): Promise<CoreLog | null> {
+async function resolveCoreLog() {
   try {
-    // @opencode-ai/core is a private package bundled into the OpenCode binary.
-    // The dynamic import resolves against Bun's module registry at runtime —
-    // the host worker already loaded and initialized it.
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore — not in node_modules; resolved from the Bun bundle at runtime
-    return await import("@opencode-ai/core/util/log") as CoreLog
+    return await import("@opencode-ai/core/util/log")
   } catch {
     return null
   }
 }
 
-// Kick off resolution immediately so it's ready before the first log call.
 const coreLogPromise = resolveCoreLog()
 
-/**
- * Fallback writer used when the core log module is unavailable.
- * Always writes to stderr — correct for test environments.
- */
 function fallbackWrite(level: "INFO" | "WARN", msg: string): void {
   const ts = new Date().toISOString().split(".")[0]
   process.stderr.write(`${level.padEnd(5)} ${ts} service=opencode-claude-bridge ${msg}\n`)
