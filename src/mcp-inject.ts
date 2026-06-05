@@ -178,7 +178,15 @@ export function mapClaudeMcpServer(
         if (typeof server.oauth.clientId === "string") oauth.clientId = server.oauth.clientId
         if (typeof server.oauth.clientSecret === "string") oauth.clientSecret = server.oauth.clientSecret
         if (typeof server.oauth.scope === "string") oauth.scope = server.oauth.scope
-        if (typeof server.oauth.callbackPort === "number") oauth.callbackPort = server.oauth.callbackPort
+        // OpenCode enforces callbackPort as an integer in [1, 65535] (Schema.isBetween).
+        if (
+          typeof server.oauth.callbackPort === "number" &&
+          Number.isInteger(server.oauth.callbackPort) &&
+          server.oauth.callbackPort >= 1 &&
+          server.oauth.callbackPort <= 65535
+        ) {
+          oauth.callbackPort = server.oauth.callbackPort
+        }
         if (typeof server.oauth.redirectUri === "string") oauth.redirectUri = server.oauth.redirectUri
         entry.oauth = oauth
       }

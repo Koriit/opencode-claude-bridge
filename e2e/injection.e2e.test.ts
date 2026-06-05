@@ -632,3 +632,89 @@ describe("bridge e2e — native skill collision (bridge skill is prefixed, nativ
     expect(prefixed?.location).toContain(server!.cacheDir!)
   })
 })
+
+// ── Test suite: agent color sanitization (the kio-reviewer crash) ─────────────
+
+describe("bridge e2e — agent color sanitization", () => {
+  let fixture: { dir: string; cleanup: () => void }
+  let server: BridgeServer | undefined
+
+  beforeAll(async () => {
+    fixture = makePluginDir()
+
+    // This fixture reproduces the exact crash: kio-reviewer had color: magenta.
+    // Before the fix, OpenCode's config validation rejected "magenta" at config.get
+    // with "Expected a string matching the RegExp ^#[0-9a-fA-F]{6}$" and crashed
+    // the entire instance (GET /config and GET /agent both returned 500).
+    writeFixtureFile(
+      fixture.dir,
+      "agents/kio-reviewer.md",
+      "---\ndescription: Code reviewer\ncolor: magenta\n---\nYou are a code reviewer.",
+    )
+    // Also include an agent with a valid hex color and one with a valid enum token,
+    // to confirm non-broken colors are preserved exactly.
+    writeFixtureFile(
+      fixture.dir,
+      "agents/hex-agent.md",
+      "---\ndescription: Hex colored\ncolor: '#a855f7'\n---\nYou use hex color.",
+    )
+    writeFixtureFile(
+      fixture.dir,
+      "agents/enum-agent.md",
+      "---\ndescription: Enum colored\ncolor: accent\n---\nYou use enum color.",
+    )
+
+    server = await startBridge({
+      claude: {
+        plugins: [userPlugin("kio-plugins@mkt", fixture.dir)],
+      },
+    })
+    await server.triggerHook()
+  }, TEST_TIMEOUT)
+
+  afterAll(async () => {
+    await server?.stop()
+    fixture.cleanup()
+  })
+
+  test("server stays healthy after injecting an agent with a CSS named color", async () => {
+    // Before the fix, the startup crash manifested as /global/health returning 200
+    // but /agent (which calls config.get internally) returning 500. Both must return
+    // 200 after the color is sanitized before injection.
+    const health = await server!.get("/global/health")
+    expect(health.status).toBe(200)
+  })
+
+  test("GET /agent returns 200 and the agent appears despite its CSS named color", async () => {
+    const res = await server!.get("/agent")
+    expect(res.status).toBe(200)
+    const agents = res.body as AgentItem[]
+    const reviewer = findByName(agents, "kio-reviewer")
+    expect(reviewer).toBeDefined()
+    expect(reviewer?.description).toContain("kio-plugins@mkt")
+  })
+
+  test("CSS color 'magenta' is mapped to hex #ff00ff in the injected agent", async () => {
+    const res = await server!.get("/agent")
+    const agents = res.body as (AgentItem & { color?: string })[]
+    const reviewer = findByName(agents, "kio-reviewer")
+    expect(reviewer).toBeDefined()
+    expect((reviewer as { color?: string } | undefined)?.color).toBe("#ff00ff")
+  })
+
+  test("valid hex color '#a855f7' is preserved unchanged", async () => {
+    const res = await server!.get("/agent")
+    const agents = res.body as (AgentItem & { color?: string })[]
+    const agent = findByName(agents, "hex-agent")
+    expect(agent).toBeDefined()
+    expect((agent as { color?: string } | undefined)?.color).toBe("#a855f7")
+  })
+
+  test("valid enum color 'accent' is preserved unchanged", async () => {
+    const res = await server!.get("/agent")
+    const agents = res.body as (AgentItem & { color?: string })[]
+    const agent = findByName(agents, "enum-agent")
+    expect(agent).toBeDefined()
+    expect((agent as { color?: string } | undefined)?.color).toBe("accent")
+  })
+})
