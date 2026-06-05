@@ -25,58 +25,49 @@ export interface Logger {
 }
 
 /**
- * True when the process was launched with `--print-logs`.
+ * Internal output logger that writes to process.stderr in OpenCode's structured
+ * log format: `LEVEL  ISO-timestamp +Xms service=opencode-claude-bridge <message>`
  *
- * The plugin API has no logging facility — the bridge's only output channel is
- * stdout/stderr (console.log/warn). Writing unconditionally would make bridge
- * output appear in the terminal on every OpenCode launch regardless of whether
- * the user asked for logs. Gating on `--print-logs` mirrors how OpenCode itself
- * controls log visibility, even though the bridge cannot write into OpenCode's
- * structured log pipeline directly.
+ * Suppressed when --print-logs is absent — the plugin API has no log facility,
+ * so this is the only way to match OpenCode's own log-visibility behaviour.
  */
-const PRINT_LOGS = process.argv.includes("--print-logs")
+const log = (() => {
+  const enabled = process.argv.includes("--print-logs")
+  let last = Date.now()
 
-/** Timestamp of the most recent emit, for computing the +Xms delta (mirrors OpenCode's log.ts). */
-let lastEmitMs = Date.now()
+  function write(level: "INFO" | "WARN", msg: string): void {
+    if (!enabled) return
+    const now = Date.now()
+    const ts = new Date(now).toISOString().split(".")[0]
+    const diff = now - last
+    last = now
+    process.stderr.write(`${level.padEnd(5)} ${ts} +${diff}ms service=opencode-claude-bridge ${msg}\n`)
+  }
+
+  return {
+    info: (msg: string) => write("INFO", msg),
+    warn: (msg: string) => write("WARN", msg),
+  }
+})()
 
 /**
- * Emit one log line in OpenCode's structured log format:
- *   LEVEL  ISO-timestamp +Xms service=opencode-claude-bridge <message>
- *
- * Writes to process.stderr (same channel OpenCode uses with --print-logs).
- * Suppressed silently when --print-logs is absent, matching OpenCode's behaviour
- * of writing to the log file instead of the terminal in that case.
- */
-function emit(level: "INFO" | "WARN", msg: string): void {
-  if (!PRINT_LOGS) return
-  const now = Date.now()
-  const diff = now - lastEmitMs
-  lastEmitMs = now
-  // ISO timestamp without milliseconds — same truncation OpenCode uses.
-  const ts = new Date(now).toISOString().split(".")[0]
-  process.stderr.write(`${level.padEnd(5)} ${ts} +${diff}ms service=opencode-claude-bridge ${msg}\n`)
-}
-
-/**
- * Create a logger bound to the resolved `strict` flag. The hook itself is responsible
- * for catching {@link BridgeError} in non-strict paths; in strict mode it lets the
- * error propagate so OpenCode surfaces a hard failure.
+ * Create a logger bound to the resolved `strict` flag. The hook itself is
+ * responsible for catching {@link BridgeError} in non-strict paths; in strict
+ * mode the error propagates so OpenCode surfaces a hard failure.
  */
 export function createLogger(strict: boolean): Logger {
   let warningCount = 0
   return {
-    info(msg: string): void {
-      emit("INFO", msg)
+    info(msg) {
+      log.info(msg)
     },
-    warn(msg: string, opts?: WarnOptions): void {
+    warn(msg, opts) {
       const fatalInStrict = opts?.fatalInStrict ?? true
       warningCount++
-      if (strict && fatalInStrict) {
-        throw new BridgeError(msg)
-      }
-      emit("WARN", msg)
+      if (strict && fatalInStrict) throw new BridgeError(msg)
+      log.warn(msg)
     },
-    hadWarnings(): boolean {
+    hadWarnings() {
       return warningCount > 0
     },
   }
