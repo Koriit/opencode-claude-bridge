@@ -29,6 +29,8 @@ import path from "node:path"
 import type { Config } from "@opencode-ai/plugin"
 import { extractSkillName } from "./skill-scan.js"
 import { NameAllocator, splitPluginId } from "./naming.js"
+import { parseFrontmatter, FRONTMATTER_PARSE_ERROR } from "./frontmatter.js"
+import { injectCommandEntry } from "./inject.js"
 import type { Logger } from "./logger.js"
 import type { ClaudePlugin } from "./types.js"
 
@@ -55,6 +57,7 @@ interface NormalizedSkillsConfig {
 
 interface InjectableConfig {
   skills?: SkillsConfig | boolean | undefined
+  command?: Record<string, unknown> | undefined
 }
 
 /**
@@ -317,14 +320,20 @@ export function patchSkillName(content: string, newName: string): string {
 
 /**
  * Scan `<installPath>/skills/` for skill subdirectories and inject each one into
- * `cfg.skills.paths`, performing a cache copy + frontmatter patch on collision.
+ * `cfg.skills.paths` and/or `cfg.command` based on the skill's frontmatter flags.
  *
- * @returns the number of skills injected and collisions renamed.
+ * Routing table (from `user-invocable` and `disable-model-invocation` frontmatter):
+ *   - neither flag      → inject as skill AND command
+ *   - user-invocable: false → inject as skill only (no command)
+ *   - disable-model-invocation: true → inject as command only (no skill)
+ *   - both flags set    → skip entirely with a WARN
  */
 async function injectPluginSkills(
   plugin: ClaudePlugin,
   skillsCfg: NormalizedSkillsConfig,
-  allocator: NameAllocator,
+  mutableCfg: InjectableConfig,
+  skillAllocator: NameAllocator,
+  commandAllocator: NameAllocator,
   cacheRoot: string,
   summary: SkillInjectionSummary,
   logger: Logger,
@@ -363,36 +372,81 @@ async function injectPluginSkills(
       )
     }
 
-    const { name: allocatedName, renamed } = allocator.claim(plugin.id, bareName)
+    // Parse additional frontmatter flags that control injection routing.
+    const parsed = parseFrontmatter(content)
+    let userInvocable = true
+    let disableModelInvocation = false
+    let description: string | undefined
+    let body = ""
 
-    if (!renamed) {
-      // No collision — point OpenCode directly at the plugin's skill dir.
-      skillsCfg.paths.push(skillDir)
-      summary.skills++
-    } else {
-      // Collision — copy the skill dir into the bridge cache and patch the name.
-      const cachedSkillDir = cacheDirForSkill(cacheRoot, plugin, allocatedName)
-      const cachedSkillMd = path.join(cachedSkillDir, "SKILL.md")
+    if (parsed !== null && parsed !== FRONTMATTER_PARSE_ERROR) {
+      const fm = parsed.data
+      if (fm["user-invocable"] === false) userInvocable = false
+      if (fm["disable-model-invocation"] === true) disableModelInvocation = true
+      if (typeof fm["description"] === "string") description = fm["description"]
+      body = parsed.body
+    }
 
-      const stale = await isCacheStale(skillMdPath, cachedSkillMd)
-      if (stale) {
-        try {
-          await copyDirRecursive(skillDir, cachedSkillDir, logger)
-          // Patch using the content already in memory (read above for extractSkillName)
-          // rather than re-reading the just-copied file — same bytes, avoids a round-trip.
-          const patched = patchSkillName(content, allocatedName)
-          await fs.writeFile(cachedSkillMd, patched, "utf8")
-        } catch (err) {
-          logger.warn(
-            `failed to create bridge-cache copy for skill "${bareName}" from plugin "${plugin.id}" (${err instanceof Error ? err.message : String(err)}); skipping`,
-          )
-          continue
+    const asSkill = !disableModelInvocation
+    const asCommand = userInvocable
+
+    if (!asSkill && !asCommand) {
+      logger.warn(
+        `skill "${bareName}" from plugin "${plugin.id}" has both "disable-model-invocation: true" and "user-invocable: false"; skipping`,
+        { fatalInStrict: false },
+      )
+      continue
+    }
+
+    if (asSkill) {
+      const { name: allocatedName, renamed } = skillAllocator.claim(plugin.id, bareName)
+
+      if (!renamed) {
+        // No collision — point OpenCode directly at the plugin's skill dir.
+        skillsCfg.paths.push(skillDir)
+        summary.skills++
+      } else {
+        // Collision — copy the skill dir into the bridge cache and patch the name.
+        const cachedSkillDir = cacheDirForSkill(cacheRoot, plugin, allocatedName)
+        const cachedSkillMd = path.join(cachedSkillDir, "SKILL.md")
+
+        const stale = await isCacheStale(skillMdPath, cachedSkillMd)
+        if (stale) {
+          try {
+            await copyDirRecursive(skillDir, cachedSkillDir, logger)
+            // Patch using the content already in memory (read above for extractSkillName)
+            // rather than re-reading the just-copied file — same bytes, avoids a round-trip.
+            const patched = patchSkillName(content, allocatedName)
+            await fs.writeFile(cachedSkillMd, patched, "utf8")
+          } catch (err) {
+            logger.warn(
+              `failed to create bridge-cache copy for skill "${bareName}" from plugin "${plugin.id}" (${err instanceof Error ? err.message : String(err)}); skipping`,
+            )
+            continue
+          }
         }
-      }
 
-      skillsCfg.paths.push(cachedSkillDir)
-      summary.skills++
-      summary.renamed++
+        skillsCfg.paths.push(cachedSkillDir)
+        summary.skills++
+        summary.renamed++
+      }
+    }
+
+    if (asCommand) {
+      if (!body) continue
+      const fmData = (parsed !== null && parsed !== FRONTMATTER_PARSE_ERROR) ? parsed.data : {}
+      const modelRaw = fmData["model"]
+      const model = typeof modelRaw === "string" && modelRaw.includes("/") ? modelRaw : undefined
+      const { renamed } = injectCommandEntry(
+        bareName,
+        { template: body, description, model },
+        mutableCfg as unknown as { command?: Record<string, import("./inject.js").CommandEntry> },
+        commandAllocator,
+        plugin.id,
+        logger,
+      )
+      summary.commandsAdded++
+      if (renamed) summary.renamed++
     }
   }
 }
@@ -403,6 +457,7 @@ async function injectPluginSkills(
 export interface SkillInjectionSummary {
   skills: number
   renamed: number
+  commandsAdded: number
 }
 
 /**
@@ -424,6 +479,13 @@ export interface SkillInjectOptions {
    * to `~/.cache/opencode-claude-bridge/skills/`.
    */
   cacheRoot?: string
+  /**
+   * The fully-populated command name allocator from `injectCommandsAndAgents`.
+   * Required to participate in the same command namespace so skill-derived
+   * commands never collide with plugin commands or built-in commands.
+   * When omitted (e.g. in legacy callers), a fresh allocator is created.
+   */
+  commandAllocator?: NameAllocator
 }
 
 /**
@@ -451,7 +513,7 @@ export async function injectSkills(
   logger: Logger,
 ): Promise<SkillInjectionSummary> {
   const mutableCfg = cfg as unknown as InjectableConfig
-  const summary: SkillInjectionSummary = { skills: 0, renamed: 0 }
+  const summary: SkillInjectionSummary = { skills: 0, renamed: 0, commandsAdded: 0 }
 
   if (plugins.length === 0) return summary
 
@@ -469,13 +531,17 @@ export async function injectSkills(
   const cacheRoot =
     opts.cacheRoot ?? path.join(opts.home, ".cache", "opencode-claude-bridge", "skills")
 
-  // Seed the allocator with every name OpenCode already knows about (native + built-ins).
+  // Seed the skill allocator with every name OpenCode already knows about (native + built-ins).
   // `existingSkillNames` is provided by the caller (from `collectExistingSkillNames`) to
   // avoid calling the Skill service from the hook.
-  const allocator = new NameAllocator(existingSkillNames)
+  const skillAllocator = new NameAllocator(existingSkillNames)
+
+  // Use the caller-provided command allocator so skill-derived commands share the
+  // same namespace as plugin commands. Fall back to a fresh one if not provided.
+  const commandAllocator = opts.commandAllocator ?? new NameAllocator(new Set<string>())
 
   for (const plugin of plugins) {
-    await injectPluginSkills(plugin, skillsCfg, allocator, cacheRoot, summary, logger)
+    await injectPluginSkills(plugin, skillsCfg, mutableCfg, skillAllocator, commandAllocator, cacheRoot, summary, logger)
   }
 
   return summary

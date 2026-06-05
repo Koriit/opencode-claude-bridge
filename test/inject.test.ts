@@ -215,7 +215,7 @@ describe("injectCommandsAndAgents — empty plugin list", () => {
     const cfg = asConfig({})
     const logger = makeLogger()
     const summary = await injectCommandsAndAgents([], cfg, logger)
-    expect(summary).toEqual({ commands: 0, agents: 0, renamed: 0 })
+    expect(summary).toMatchObject({ commands: 0, agents: 0, renamed: 0 })
     expect(logger.warnings).toHaveLength(0)
   })
 })
@@ -793,7 +793,7 @@ describe("injectCommandsAndAgents — plugin with no commands/agents dirs", () =
     const logger = makeLogger()
     const summary = await injectCommandsAndAgents([fakePlugin("empty@m", dir)], asConfig(cfg), logger)
 
-    expect(summary).toEqual({ commands: 0, agents: 0, renamed: 0 })
+    expect(summary).toMatchObject({ commands: 0, agents: 0, renamed: 0 })
     expect(logger.warnings).toHaveLength(0)
   })
 })

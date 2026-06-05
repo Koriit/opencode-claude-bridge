@@ -80,6 +80,11 @@ export interface InjectionSummary {
   renamed: number
 }
 
+/** Full result of {@link injectCommandsAndAgents}, including the populated command allocator. */
+export interface InjectionResult extends InjectionSummary {
+  commandAllocator: NameAllocator
+}
+
 // ── File collection helpers ────────────────────────────────────────────────────
 
 /**
@@ -405,6 +410,41 @@ export function sanitizeAgentColor(value: string): string | null {
   return null
 }
 
+// ── Single-entry command injection ───────────────────────────────────────────
+
+/**
+ * Insert one command entry into `cfg.command` using the allocator, appending `[pluginId]`
+ * to the description. Returns the allocated name and whether it was renamed.
+ *
+ * The `entry.template` must already be fully resolved by the caller (e.g. via
+ * `resolvePluginRoot` for commands from the plugin's commands/ dir, or verbatim for
+ * skill-derived commands whose body does not use `${CLAUDE_PLUGIN_ROOT}`).
+ */
+export function injectCommandEntry(
+  bareName: string,
+  entry: CommandEntry,
+  cfg: InjectableConfig,
+  allocator: NameAllocator,
+  pluginId: string,
+  logger: Logger,
+): { allocatedName: string; renamed: boolean } {
+  if (cfg.command === undefined || cfg.command === null || typeof cfg.command !== "object") {
+    cfg.command = {}
+  }
+
+  const { name: allocatedName, renamed } = allocator.claim(pluginId, bareName)
+
+  const rawDescription = entry.description
+  const tracedDescription = rawDescription
+    ? `${rawDescription} [${pluginId}]`
+    : `${bareName} [${pluginId}]`
+
+  warnUnsupportedPlaceholders(entry.template, allocatedName, pluginId, logger)
+
+  cfg.command[allocatedName] = { ...entry, description: tracedDescription }
+  return { allocatedName, renamed }
+}
+
 // ── Command injection for one plugin ─────────────────────────────────────────
 
 /**
@@ -666,11 +706,8 @@ export async function injectCommandsAndAgents(
   plugins: ClaudePlugin[],
   cfg: Config,
   logger: Logger,
-): Promise<InjectionSummary> {
+): Promise<InjectionResult> {
   const mutableCfg = cfg as unknown as InjectableConfig
-  const summary: InjectionSummary = { commands: 0, agents: 0, renamed: 0 }
-
-  if (plugins.length === 0) return summary
 
   // Seed the command allocator with existing cfg keys ∪ built-in command names.
   const existingCommands = new Set<string>([
@@ -678,6 +715,10 @@ export async function injectCommandsAndAgents(
     ...Object.keys(mutableCfg.command ?? {}),
   ])
   const commandAlloc = new NameAllocator(existingCommands)
+
+  const summary: InjectionSummary = { commands: 0, agents: 0, renamed: 0 }
+
+  if (plugins.length === 0) return { ...summary, commandAllocator: commandAlloc }
 
   // Seed the agent allocator with existing cfg keys ∪ built-in agent names.
   const existingAgents = new Set<string>([
@@ -691,5 +732,5 @@ export async function injectCommandsAndAgents(
     await injectPluginAgents(plugin, mutableCfg, agentAlloc, summary, logger)
   }
 
-  return summary
+  return { ...summary, commandAllocator: commandAlloc }
 }

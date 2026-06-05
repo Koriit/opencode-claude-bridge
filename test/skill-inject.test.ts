@@ -4,6 +4,7 @@ import path from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { injectSkills, patchSkillName, type SkillInjectionSummary } from "../src/skill-inject.js"
 import { extractSkillName } from "../src/skill-scan.js"
+import { NameAllocator } from "../src/naming.js"
 import type { Logger } from "../src/logger.js"
 import type { ClaudePlugin } from "../src/types.js"
 import type { Config } from "@opencode-ai/plugin"
@@ -757,7 +758,9 @@ describe("injectSkills — collision detection", () => {
     const content = readFileSync(path.join(mutable.skills.paths[1]!, "SKILL.md"), "utf8")
     expect(extractSkillName(content)).toBe("b-plugin-shared")
     expect(summary.skills).toBe(2)
-    expect(summary.renamed).toBe(1)
+    expect(summary.commandsAdded).toBe(2)
+    // Both skill rename (for b-plugin skill) and command rename (for b-plugin command) counted
+    expect(summary.renamed).toBe(2)
   })
 
   test("native skill from existing names stays untouched; bridge item is prefixed", async () => {
@@ -1007,5 +1010,189 @@ describe("injectSkills — symlink skip in copyDirRecursive (A5 fix)", () => {
     const cachedEntries = require("node:fs").readdirSync(skillName!)
     expect(cachedEntries).not.toContain("evil-link")
     expect(cachedEntries).toContain("SKILL.md")
+  })
+})
+
+// ── injectSkills — user-invocable / disable-model-invocation routing ──────────
+
+function writeSkillWithFlags(
+  skillsDir: string,
+  skillName: string,
+  flags: { userInvocable?: boolean; disableModelInvocation?: boolean },
+  body = "Skill body for command template.",
+): void {
+  const skillDir = path.join(skillsDir, skillName)
+  mkdirSync(skillDir, { recursive: true })
+  const lines = ["---", `name: ${skillName}`, `description: A skill named ${skillName}.`]
+  if (flags.userInvocable === false) lines.push("user-invocable: false")
+  if (flags.disableModelInvocation === true) lines.push("disable-model-invocation: true")
+  lines.push("---", "", body, "")
+  writeFileSync(path.join(skillDir, "SKILL.md"), lines.join("\n"))
+}
+
+describe("injectSkills — frontmatter routing flags", () => {
+  let tmp: { dir: string; cleanup: () => void }
+  beforeEach(() => { tmp = makeTempDir() })
+  afterEach(() => tmp.cleanup())
+
+  function makeCommandAllocator(): NameAllocator {
+    return new NameAllocator(new Set<string>())
+  }
+
+  test("default (no flags): skill IS injected into paths AND command IS injected", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills")
+    mkdirSync(skillsDir, { recursive: true })
+    writeSkillWithFlags(skillsDir, "my-skill", {})
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    const logger = makeLogger()
+    const commandAllocator = makeCommandAllocator()
+
+    const summary = await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot: path.join(tmp.dir, "cache"), commandAllocator },
+      logger,
+    )
+
+    const mutable = cfg as unknown as { skills: { paths: string[] }; command?: Record<string, unknown> }
+    expect(mutable.skills.paths).toHaveLength(1)
+    expect(mutable.command).toBeDefined()
+    expect(Object.keys(mutable.command!)).toHaveLength(1)
+    expect(summary.skills).toBe(1)
+    expect(summary.commandsAdded).toBe(1)
+    expect(logger.warnings).toHaveLength(0)
+  })
+
+  test("user-invocable: false — skill IS injected, command is NOT injected", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills")
+    mkdirSync(skillsDir, { recursive: true })
+    writeSkillWithFlags(skillsDir, "model-only-skill", { userInvocable: false })
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    const logger = makeLogger()
+    const commandAllocator = makeCommandAllocator()
+
+    const summary = await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot: path.join(tmp.dir, "cache"), commandAllocator },
+      logger,
+    )
+
+    const mutable = cfg as unknown as { skills: { paths: string[] }; command?: Record<string, unknown> }
+    expect(mutable.skills.paths).toHaveLength(1)
+    expect(mutable.command == null || Object.keys(mutable.command).length === 0).toBe(true)
+    expect(summary.skills).toBe(1)
+    expect(summary.commandsAdded).toBe(0)
+    expect(logger.warnings).toHaveLength(0)
+  })
+
+  test("disable-model-invocation: true — skill is NOT injected, command IS injected", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills")
+    mkdirSync(skillsDir, { recursive: true })
+    writeSkillWithFlags(skillsDir, "user-only-skill", { disableModelInvocation: true })
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    const logger = makeLogger()
+    const commandAllocator = makeCommandAllocator()
+
+    const summary = await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot: path.join(tmp.dir, "cache"), commandAllocator },
+      logger,
+    )
+
+    const mutable = cfg as unknown as { skills: { paths: string[] }; command?: Record<string, unknown> }
+    expect(mutable.skills.paths).toHaveLength(0)
+    expect(mutable.command).toBeDefined()
+    expect(Object.keys(mutable.command!)).toHaveLength(1)
+    expect(summary.skills).toBe(0)
+    expect(summary.commandsAdded).toBe(1)
+    expect(logger.warnings).toHaveLength(0)
+  })
+
+  test("both flags set — skill NOT injected, command NOT injected, WARN fired", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills")
+    mkdirSync(skillsDir, { recursive: true })
+    writeSkillWithFlags(skillsDir, "ghost-skill", { userInvocable: false, disableModelInvocation: true })
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    const logger = makeLogger()
+    const commandAllocator = makeCommandAllocator()
+
+    const summary = await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot: path.join(tmp.dir, "cache"), commandAllocator },
+      logger,
+    )
+
+    const mutable = cfg as unknown as { skills: { paths: string[] }; command?: Record<string, unknown> }
+    expect(mutable.skills.paths).toHaveLength(0)
+    expect(mutable.command == null || Object.keys(mutable.command).length === 0).toBe(true)
+    expect(summary.skills).toBe(0)
+    expect(summary.commandsAdded).toBe(0)
+    expect(logger.warnings).toHaveLength(1)
+    expect(logger.warnings[0]).toContain("ghost-skill")
+  })
+
+  test("injected command description is traced with [pluginId]", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills")
+    mkdirSync(skillsDir, { recursive: true })
+    writeSkillWithFlags(skillsDir, "my-skill", {})
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    const logger = makeLogger()
+    const commandAllocator = makeCommandAllocator()
+
+    await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot: path.join(tmp.dir, "cache"), commandAllocator },
+      logger,
+    )
+
+    const mutable = cfg as unknown as { command?: Record<string, { description?: string; template: string }> }
+    const entry = Object.values(mutable.command!)[0]!
+    expect(entry.description).toContain("[plug@mkt]")
+    expect(entry.template).toBe("Skill body for command template.")
+  })
+
+  test("command allocator is shared: skill-derived command participates in same namespace as plugin commands", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills")
+    mkdirSync(skillsDir, { recursive: true })
+    writeSkillWithFlags(skillsDir, "existing-cmd", {})
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    const logger = makeLogger()
+    // Pre-seed the command allocator with the same name as the skill
+    const commandAllocator = new NameAllocator(new Set(["existing-cmd"]))
+
+    await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot: path.join(tmp.dir, "cache"), commandAllocator },
+      logger,
+    )
+
+    const mutable = cfg as unknown as { command?: Record<string, unknown> }
+    // The command was renamed because "existing-cmd" was already taken
+    expect(mutable.command).toBeDefined()
+    expect(Object.keys(mutable.command!)).not.toContain("existing-cmd")
+    expect(Object.keys(mutable.command!).some((k) => k.includes("existing-cmd"))).toBe(true)
   })
 })

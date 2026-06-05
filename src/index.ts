@@ -68,6 +68,7 @@ export const server: Plugin = async (_input, options) => {
 
         // §6.1 commands, §6.2 agents — inline injection into the shared cfg.
         const cmdAgentSummary = await injectCommandsAndAgents(selected, cfg, logger)
+        const { commandAllocator } = cmdAgentSummary
 
         // §6.3 skills — cfg.skills.paths injection (with bridge-cache copy on collision).
         const home = os.homedir()
@@ -85,6 +86,7 @@ export const server: Plugin = async (_input, options) => {
           home,
           projectDir: _input.directory,
           cacheRoot: process.env["OPENCODE_CLAUDE_BRIDGE_CACHE_ROOT"],
+          commandAllocator,
         }, logger)
 
         // §6.4 MCP — cfg.mcp injection (opt-in via allowMcp).
@@ -96,7 +98,7 @@ export const server: Plugin = async (_input, options) => {
         // §10 concise per-run summary.
         const renamed = cmdAgentSummary.renamed + skillSummary.renamed + mcpSummary.renamed + lspSummary.renamed
         const summaryParts: string[] = [
-          `injected ${cmdAgentSummary.commands} command(s), ${cmdAgentSummary.agents} agent(s), ${skillSummary.skills} skill(s), ${mcpSummary.servers} MCP server(s), ${lspSummary.servers} LSP server(s)`,
+          `injected ${cmdAgentSummary.commands + skillSummary.commandsAdded} command(s), ${cmdAgentSummary.agents} agent(s), ${skillSummary.skills} skill(s), ${mcpSummary.servers} MCP server(s), ${lspSummary.servers} LSP server(s)`,
         ]
         if (renamed > 0) summaryParts.push(`renamed ${renamed} (collision)`)
         if (mcpSummary.skippedPolicy > 0) summaryParts.push(`skipped ${mcpSummary.skippedPolicy} MCP (policy)`)
