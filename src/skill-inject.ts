@@ -353,12 +353,14 @@ async function injectPluginSkills(
       continue
     }
 
-    const bareName = extractSkillName(content)
-    if (bareName === null) {
-      logger.warn(
-        `SKILL.md at "${skillMdPath}" from plugin "${plugin.id}" has no frontmatter name; skipping`,
+    const extractedName = extractSkillName(content)
+    // Fall back to the directory name when the SKILL.md has no `name:` field —
+    // the directory name is the conventional skill identifier and is always present.
+    const bareName = extractedName ?? subdir
+    if (extractedName === null) {
+      logger.info(
+        `SKILL.md at "${skillMdPath}" from plugin "${plugin.id}" has no frontmatter name; using directory name "${subdir}"`,
       )
-      continue
     }
 
     const { name: allocatedName, renamed } = allocator.claim(plugin.id, bareName)

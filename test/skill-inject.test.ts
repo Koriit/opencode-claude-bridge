@@ -821,7 +821,7 @@ describe("injectSkills — failure handling", () => {
     expect(logger.warnings[0]).toContain("could not read SKILL.md")
   })
 
-  test("skips and warns when SKILL.md has no frontmatter name", async () => {
+  test("falls back to directory name (INFO, no warning) when SKILL.md has no frontmatter name", async () => {
     const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
     const skillsDir = path.join(pluginDir, "skills", "no-name-skill")
     mkdirSync(skillsDir, { recursive: true })
@@ -839,10 +839,12 @@ describe("injectSkills — failure handling", () => {
     )
 
     const mutable = cfg as unknown as { skills: { paths: string[] } }
-    expect(mutable.skills.paths).toHaveLength(0)
-    expect(summary.skills).toBe(0)
-    expect(logger.warnings).toHaveLength(1)
-    expect(logger.warnings[0]).toContain("has no frontmatter name")
+    // Skill is injected using the directory name "no-name-skill"
+    expect(mutable.skills.paths).toHaveLength(1)
+    expect(summary.skills).toBe(1)
+    // No warning — this is normal; a soft INFO is emitted instead
+    expect(logger.warnings).toHaveLength(0)
+    expect(logger.infos.some((m) => m.includes('using directory name "no-name-skill"'))).toBe(true)
   })
 
   test("skips invalid skill but still injects valid skills from the same plugin", async () => {
