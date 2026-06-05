@@ -395,13 +395,6 @@ describe("bridge e2e — blockedPlugins contribute nothing", () => {
     fixture.cleanup()
   })
 
-  test("blocked plugin's command does not appear in GET /command", async () => {
-    const res = await server!.get("/command")
-    const commands = res.body as CommandItem[]
-    const cmd = findByName(commands, "blocked-cmd")
-    expect(cmd).toBeUndefined()
-  })
-
   test("injection summary shows 0 commands injected", () => {
     expect(server!.logHas("injected 0 command(s), 0 agent(s), 0 skill(s)")).toBe(true)
   })

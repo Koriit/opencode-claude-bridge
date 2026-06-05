@@ -95,6 +95,28 @@ export const server: Plugin = async (_input, options) => {
         // §6.5 LSP — cfg.lsp injection (opt-in via allowLsp; respects cfg.lsp === false).
         const lspSummary = await injectLsp(selected, cfg, bridge.allowLsp, logger)
 
+        // Remove commands that OpenCode's native Claude integration may have
+        // auto-loaded from blocked plugins. Runs after all bridge injection so
+        // OpenCode's own loading has had time to run during the async awaits above.
+        const selectedIds = new Set(selected.map((p) => p.id))
+        const blockedPlugins = all.filter((p) => !selectedIds.has(p.id))
+        if (blockedPlugins.length > 0) {
+          const mutableCmd = (cfg as unknown as { command?: Record<string, { description?: string }> }).command
+          if (mutableCmd && typeof mutableCmd === "object") {
+            for (const [name, entry] of Object.entries(mutableCmd)) {
+              const desc = entry?.description
+              if (typeof desc === "string") {
+                for (const bp of blockedPlugins) {
+                  if (desc.endsWith(`[${bp.id}]`)) {
+                    delete mutableCmd[name]
+                    break
+                  }
+                }
+              }
+            }
+          }
+        }
+
         // §10 concise per-run summary.
         const renamed = cmdAgentSummary.renamed + skillSummary.renamed + mcpSummary.renamed + lspSummary.renamed
         const summaryParts: string[] = [

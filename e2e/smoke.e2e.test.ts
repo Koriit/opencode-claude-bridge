@@ -76,7 +76,7 @@ describe("bridge e2e — resolution & posture", () => {
         expect(health.status).toBe(200)
 
         // A clear warning was emitted and nothing was resolved.
-        expect(server.logHas("[opencode-claude-bridge] warning:")).toBe(true)
+        expect(server.logHas("injecting nothing this run")).toBe(true)
         expect(server.logHas("exited 1")).toBe(true)
       } finally {
         await server?.stop()
@@ -97,9 +97,10 @@ describe("bridge e2e — resolution & posture", () => {
 
         await server.triggerHook()
 
-        // alpha is blocked; only zeta survives.
+        // alpha is blocked; only zeta survives. The bridge's resolution line is
+        // the authoritative check — OpenCode's own Claude integration may independently
+        // log about all discovered plugins, so a broad buffer check is unreliable.
         expect(server.logHas("resolved 1 enabled Claude plugin(s): zeta@mkt")).toBe(true)
-        expect(server.logHas("alpha@mkt")).toBe(false)
       } finally {
         await server?.stop()
       }

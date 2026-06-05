@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+
 /** Thrown when a soft warning is promoted to a hard error under `strict` mode. */
 export class BridgeError extends Error {
   override name = "BridgeError"
@@ -25,16 +27,29 @@ export interface Logger {
 }
 
 /**
- * Resolve the core log module at runtime by hitting Bun's module registry.
+ * Detect whether --print-logs was passed to the parent OpenCode process.
  *
- * @opencode-ai/core is private and not on npm, but the host Bun Worker already
- * executed `import * as Log from "@opencode-ai/core/util/log"` and called
- * `Log.init({ print: ... })`. A dynamic import of the same specifier returns
- * the cached, fully-configured instance — so output correctly goes to stderr
- * (with --print-logs) or the log file (default), with no argv check needed.
- *
- * Falls back to direct stderr writes when the import fails (tests, or if the
- * module path changes in a future OpenCode version).
+ * process.argv is stripped in Bun Workers (only ["bun", "<worker_script>"] is
+ * present), so we cannot check it directly. However, Workers run in the same
+ * OS process as the host, so /proc/self/cmdline contains the real command line.
+ * Falls back to false on non-Linux platforms or if the file is unreadable.
+ */
+function detectPrintLogs(): boolean {
+  try {
+    const args = readFileSync("/proc/self/cmdline").toString().split("\0")
+    return args.includes("--print-logs")
+  } catch {
+    return false
+  }
+}
+
+const printLogs = detectPrintLogs()
+
+/**
+ * Try to import @opencode-ai/core/util/log from the host Bun Worker's module
+ * registry. If available, its already-initialized logger routes output to
+ * stderr (with --print-logs) or the log file (default) without any extra
+ * argv inspection. Falls back to null when the module is unavailable.
  */
 async function resolveCoreLog() {
   try {
@@ -47,6 +62,7 @@ async function resolveCoreLog() {
 const coreLogPromise = resolveCoreLog()
 
 function fallbackWrite(level: "INFO" | "WARN", msg: string): void {
+  if (!printLogs) return
   const ts = new Date().toISOString().split(".")[0]
   process.stderr.write(`${level.padEnd(5)} ${ts} service=opencode-claude-bridge ${msg}\n`)
 }
