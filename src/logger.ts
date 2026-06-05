@@ -1,4 +1,7 @@
-import type { PluginInput } from "@opencode-ai/plugin"
+/** Minimal duck-type for the OpenCode client — only the log() method we use. */
+export interface LoggingClient {
+  log(params: { service?: string; level?: "debug" | "info" | "warn" | "error"; message?: string }): unknown
+}
 
 /** Thrown when a soft warning is promoted to a hard error under `strict` mode. */
 export class BridgeError extends Error {
@@ -26,7 +29,6 @@ export interface Logger {
   hadWarnings(): boolean
 }
 
-type OpenCodeClient = PluginInput["client"]
 
 /**
  * Fallback output logger used when no real OpenCode client is available (tests,
@@ -63,7 +65,7 @@ const fallbackLog = (() => {
  * When no client is provided (tests, early-startup errors) the fallback logger
  * writes to process.stderr in the same format, gated on `--print-logs`.
  */
-export function createLogger(strict: boolean, client?: OpenCodeClient): Logger {
+export function createLogger(strict: boolean, client?: LoggingClient): Logger {
   let warningCount = 0
 
   function logInfo(msg: string): void {
