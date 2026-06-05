@@ -873,16 +873,16 @@ describe("injectSkills — failure handling", () => {
   })
 })
 
-// ── injectSkills — cfg.skills.urls warning ────────────────────────────────────
+// ── injectSkills — cfg.skills.urls advisory ───────────────────────────────────
 
-describe("injectSkills — cfg.skills.urls warning", () => {
+describe("injectSkills — cfg.skills.urls advisory", () => {
   let tmp: { dir: string; cleanup: () => void }
   beforeEach(() => {
     tmp = makeTempDir()
   })
   afterEach(() => tmp.cleanup())
 
-  test("emits warning when cfg.skills.urls is non-empty", async () => {
+  test("emits INFO (not warning) when cfg.skills.urls is non-empty", async () => {
     const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
     writePluginSkills(pluginDir, ["my-skill"])
 
@@ -897,10 +897,12 @@ describe("injectSkills — cfg.skills.urls warning", () => {
       logger,
     )
 
-    expect(logger.warnings.some((w) => w.includes("cfg.skills.urls"))).toBe(true)
+    expect(logger.infos.some((m) => m.includes("cfg.skills.urls"))).toBe(true)
+    expect(logger.warnings.every((w) => !w.includes("cfg.skills.urls"))).toBe(true)
+    expect(logger.hadWarnings()).toBe(false)
   })
 
-  test("does not emit urls warning when cfg.skills.urls is empty", async () => {
+  test("does not emit urls info when cfg.skills.urls is empty", async () => {
     const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
     writePluginSkills(pluginDir, ["my-skill"])
 
@@ -915,7 +917,7 @@ describe("injectSkills — cfg.skills.urls warning", () => {
       logger,
     )
 
-    expect(logger.warnings.every((w) => !w.includes("cfg.skills.urls"))).toBe(true)
+    expect(logger.infos.every((m) => !m.includes("cfg.skills.urls"))).toBe(true)
   })
 })
 

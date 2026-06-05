@@ -455,12 +455,12 @@ export async function injectSkills(
 
   const skillsCfg = guardSkillsConfig(mutableCfg)
 
-  // Warn about URL-sourced skills — their names are not knowable at hook time
-  // without triggering the lazy Skill-service fetch (§6.3).
+  // Note (not a warning): URL-sourced skill names aren't knowable at hook time
+  // without triggering the lazy Skill-service fetch (§6.3). The bridge proceeds
+  // without collision-detection for those skills — a normal, acceptable limitation.
   if (skillsCfg.urls.length > 0) {
-    logger.warn(
+    logger.info(
       "cfg.skills.urls is non-empty; URL-sourced skill names are not available at hook time — bridge cannot detect collisions against URL-sourced skills",
-      { fatalInStrict: false },
     )
   }
 
