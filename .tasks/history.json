@@ -1,0 +1,341 @@
+{
+  "current_state": {
+    "milestone": "M1",
+    "session": "M1-S7",
+    "status": "finished",
+    "completed_sessions": 7,
+    "total_sessions": 7,
+    "next": "M1 complete"
+  },
+  "current_log": null,
+  "log": [
+    {
+      "session": "M1-S1",
+      "title": "Plugin skeleton, bridge config & Claude resolution",
+      "summary": "Delivered the bridge plugin spine. Scaffolded the Bun/TypeScript package (zero runtime deps) with the OpenCode V1 plugin module shape (default-export { id, server }). Implemented: parseBridgeConfig (documented keys only, pure, returns config+warnings); a strict-aware logger (warnings promotable to BridgeError under strict, with an always-soft opt-out); mirror-claude resolution via 'claude plugin list --json' (input.$) with the \u00a75 enabled+scope/project predicate, first-wins de-dup, and id-sorted determinism; \u00a79 version-compat that reads the running version from GET /global/health (fetch) and warns (always soft) outside >=1.15.0 <1.16.0; \u00a710 failure posture where the config hook never throws in non-strict mode. Hook resolves and logs the enabled set; injects nothing yet (deferred to later sessions). Built a reusable e2e harness that launches a real opencode serve with a fake claude shim on PATH and asserts against the live HTTP API. 55 tests pass (unit + 3 e2e). README documents install, config, and the supported OpenCode range. Code review done: fixed the test-integrity blocker (B1) plus parseSemver anchoring, projectPath guard, malformed-entry strict-promotion rationale, and routed the catch warning through the logger; 4 lower-priority items tracked as deferred todos. Source-explorer \u00a712 satisfied via on-demand read-only Explore subagents (logged decision) instead of a persistent team.",
+      "completed": "2026-06-04T21:16:38.069867Z",
+      "decisions": [
+        "Source-explorer mechanism (\u00a712): using on-demand read-only Explore subagents scoped to /home/olek/sandbox/opencode (v1.15.10) for OpenCode-internals questions, rather than a persistent TeamCreate team. Same outcome (file:line citations, lean main context) with less orchestration overhead; future sessions should follow the same pattern."
+      ],
+      "discoveries": [
+        "Running OpenCode version is only readable via the v2 SDK: createOpencodeClient from '@opencode-ai/sdk/v2' against input.serverUrl, then global.health() returns {healthy, version}. v1 input.client has no health/version method; no OPENCODE_VERSION env var at runtime; the build-define global isn't visible to external plugins. So the \u00a79 version-compat check needs an async health() call inside the config hook (safe: HTTP server is up before plugin.init).",
+        "OpenCode mounts the version route at GET /global/health (no prefix), reachable via fetch(new URL('/global/health', input.serverUrl)) -> {healthy, version}. npm plugins listed in opencode.json are installed by Arborist reify() into $XDG_CACHE_HOME/opencode/packages/<pkg>/node_modules with their FULL dependency tree, so runtime deps resolve. Despite that, choosing a zero-runtime-dependency design (plain fetch for health, hand-rolled semver range check) for robustness and to avoid SDK version coupling.",
+        "OpenCode V1 plugin contract (verified via plugin/shared.ts readV1Plugin + plugin/index.ts): the module must DEFAULT-export an OBJECT {server, id?} (PluginModule), not a bare function. A default-exported function, or any extra non-function NAMED export, drops to the legacy path (getLegacyPlugins) which throws 'Plugin export is not a function'. file://-loaded plugins additionally REQUIRE an id (resolvePluginId throws 'Path plugin must export id'). So the entry default-exports { id: 'opencode-claude-bridge', server } and keeps no stray value exports. Every later session must preserve this entry shape.",
+        "OpenCode config key for plugins is 'plugin' (singular), verified at @opencode-ai/plugin Config.plugin and opencode config/config.ts. The spec \u00a74.1 writes 'plugins' (plural) \u2014 a spec typo. Code + README correctly use singular 'plugin'. Later sessions and the M1-S7 spec-delivery map should note this as a spec/code reconciliation, not a code bug."
+      ],
+      "artifacts": [
+        "BridgeConfig",
+        "ClaudePlugin",
+        "parseBridgeConfig",
+        "createLogger",
+        "listClaudePlugins",
+        "selectEnabledPlugins",
+        "fetchOpencodeVersion",
+        "checkVersion",
+        "server",
+        "e2e-harness"
+      ]
+    },
+    {
+      "session": "M1-S2",
+      "title": "No-shadowing naming engine",
+      "summary": "Delivered the no-shadowing naming engine (pure name-decision logic; no injection yet). Added a generic, family-agnostic NameAllocator (claim/snapshot + splitPluginId/shortHash) reused by S3/S4/S5, implementing the \u00a77 rename ladder (bare -> <plugin>-<name> -> <marketplace>-<plugin>-<name> -> +sha256[8] tiebreak) with first-wins-by-id claim-tracking; native/built-in items are never renamed. Encoded the version-pinned OpenCode built-in command/agent/skill lists + skill-discovery dirs/globs as constants (opencode-builtins.ts) verified against source. Implemented a zero-dep skill-name fs-scan reimplementing OpenCode discovery (never calls the Skill service), with ~/ and project-relative cfg.skills.paths expansion and a hardened minimal frontmatter name parser. Modules: src/naming.ts, src/opencode-builtins.ts, src/skill-scan.ts. Delegated entirely in Lead Mode: kio-developer implemented; kio-reviewer APPROVED (0 blockers, 3 issues + suggestions all remediated); kio-qa-test-runner verified. Also fixed a real e2e-harness reliability bug (dangling opencode serve between runs + fixed-port reuse + 30s health timeout): harness now uses --port 0 with discovered port, SIGTERM->SIGKILL teardown, 75s health deadline, and poll-based triggerHook (resolved S1 todo #2). Final: typecheck clean, 118 unit tests, 3 e2e green back-to-back (~4-5s), no lingering processes.",
+      "completed": "2026-06-04T21:48:45.639394Z",
+      "decisions": [
+        "M1-S2 naming engine design: a generic family-agnostic NameAllocator (claim(pluginId, bareName)->{name,renamed}, snapshot(), plus splitPluginId/shortHash) reused by S3/S4/S5. Rename ladder: bare -> <plugin>-<name> -> <marketplace>-<plugin>-<name> -> +sha256(marketplace/plugin/name)[0:8]. Built-in command/agent/skill names seeded as existing (they're absent from cfg at hook time but would overwrite). Skill existing-names via a zero-dep fs-scan reimplementing OpenCode discovery (never calls the Skill service). Modules: src/naming.ts, src/opencode-builtins.ts, src/skill-scan.ts."
+      ],
+      "discoveries": [
+        "Bun's @types/bun types fs.readdir({withFileTypes:true}) as Dirent<NonSharedBuffer>[], so entry.name is not a string under strict + noUncheckedIndexedAccess; use plain readdir()+fs.stat() instead. Also: OpenCode skill discovery (config/paths.ts directories()) adds ~/.opencode via a second afs.up bounded at home, redundant with the project-upward walk when the project is under home -> the scan needs a dedup. XDG_CONFIG_HOME is respected for the opencode config dir.",
+        "e2e harness (from S1) has a reliability bug, not just load-flakiness: stop()/proc.kill() leaves a dangling 'opencode serve' between back-to-back 'bun test e2e/' runs, and the persistent module-level nextPort counter (49150+) reuses a port that lingers in TIME_WAIT; with a 30s waitForHealth deadline, test 2 (port 49151) fails deterministically on runs 2+. Run 1 after a pause is always 3/3 green in ~6.6s. Fix needs reliable process-tree termination + robust port selection (prefer --port 0 + discovered port) + longer health deadline. Compounds in S3+ which add more servers.",
+        "e2e harness final shape (reusable by S3+): spawn 'opencode serve --port 0' (0 is opencode's default), parse the bound port from its stdout line 'opencode server listening on http://<host>:<port>', poll /global/health (75s deadline), and on teardown send SIGTERM then escalate to SIGKILL after a 3s grace (bare proc.kill()=SIGTERM can hang). triggerHook polls for the bridge hook-completion marker instead of sleeping. Back-to-back runs now ~4-5s, 3/3 green, no danglers."
+      ],
+      "artifacts": [
+        "NameAllocator",
+        "splitPluginId",
+        "shortHash",
+        "collectExistingSkillNames",
+        "extractSkillName",
+        "opencode-builtins",
+        "e2e-harness"
+      ]
+    },
+    {
+      "session": "M1-S3",
+      "title": "Commands + agents injection",
+      "summary": "First cfg-mutating session: commands + agents are now injected. src/inject.ts (injectCommandsAndAgents) reads each enabled plugin's commands/**/*.md (recursive; nested path -> namespaced key, byte-identical to OpenCode's configEntryNameFromPath incl. the basename fallback) and agents/*.md (flat), parses frontmatter via a new zero-dep src/frontmatter.ts, and injects V1 shapes: commands {template, description?, agent?, model?, subtask?, variant?}; agents {description, mode:subagent, prompt (NOT system), model? (dropped unless provider/model), temperature?, top_p?, steps?, hidden?, color?, variant?} with NO permission field. ${CLAUDE_PLUGIN_ROOT}->installPath resolved in template/description/prompt; $ARGUMENTS/$1..n pass through; @file/!cmd left verbatim + soft warn (file-ref regex tightened to ignore prose @mentions). No-shadowing via per-family NameAllocator (cfg keys union builtins; first-by-id wins; native/built-ins never renamed); traceability via '<name> [plugin-id]' description suffix. Concise summary line + \u00a710 skip-and-warn on parse failure; hook never throws non-strict. Fully delegated in Lead Mode: kio-developer implemented; kio-reviewer NEEDS CHANGES (0 blockers, 5 issues + 3 suggestions) then APPROVED after remediation (all 8 verified); kio-qa-test-runner green. Final: typecheck clean, 195 unit + 18 e2e, back-to-back stable. Known non-blocking: e2e harness leaks an orphan opencode serve on teardown (todo #7, fix first in S4).",
+      "completed": "2026-06-04T22:23:11.726220Z",
+      "decisions": [
+        "M1-S3 commands+agents injection: src/inject.ts injectCommandsAndAgents(plugins, cfg, logger) + src/frontmatter.ts (zero-dep flat-YAML parser). Commands read recursively (commands/**/*.md, nested path -> namespaced key like 'tools/lint'); agents flat (agents/*.md). Per-family NameAllocator seeded with cfg keys union builtins; first-by-id wins. ${CLAUDE_PLUGIN_ROOT}->installPath in template+description+prompt body. @file/!cmd left verbatim + soft warn. Agent uses 'prompt' (not 'system'), NO permission field; model dropped unless already provider/model. Traceability via description suffix. Summary: 'injected N command(s), M agent(s); renamed K'."
+      ],
+      "discoveries": [
+        "OpenCode derives a command's cfg.command key as path.relative(commandsDir,file) minus .md, so nested commands/tools/lint.md -> key 'tools/lint' (slash is literal in the name and in GET /command). Agents are flat only. V1 ConfigAgentV1 schema expands 'permission' from a 'tools' map during decode, but direct cfg mutation bypasses the decoder, so simply omitting permission keeps it absent. The SDK Config type (Effect/Schema-derived) rejects our plain V1 shapes -> 'as unknown as' cast is correct since the runtime object is a plain mutable record (Appendix A).",
+        "e2e harness still leaks an 'opencode serve' orphan after back-to-back runs (intermittent; seen in S3 QA, not S2). S2's stop() SIGTERM->SIGKILL reaps the main proc but opencode serve spawns a child/worker that outlives it (or the SIGKILL grace timer is abandoned when bun test exits first). Tests still pass (--port 0 avoids port reuse) but orphans accumulate. Fix in S4 (kill the whole process group: spawn detached/setsid + kill the pgid, or reap children) and verify zero orphans remain."
+      ],
+      "artifacts": [
+        "injectCommandsAndAgents",
+        "parseFrontmatter",
+        "commandNameFromPath",
+        "agentNameFromPath",
+        "inject",
+        "frontmatter"
+      ]
+    },
+    {
+      "session": "M1-S4",
+      "title": "Skills injection",
+      "summary": "Skills injection delivered (the structural exception: no inline cfg form). src/skill-inject.ts injectSkills() scans each enabled plugin's skills/* subdirs, reads each SKILL.md frontmatter name, and decides a non-colliding name via the S2 NameAllocator seeded with collectExistingSkillNames (fs-scan of all OpenCode discovery dirs + built-in customize-opencode) plus intra-run claims; never calls the Skill service. No collision -> push the individual skill dir to cfg.skills.paths (zero copy). Collision -> copy the whole dir to the bridge cache (default ~/.cache/opencode-claude-bridge/skills, overridable via OPENCODE_CLAUDE_BRIDGE_CACHE_ROOT env), dot-dirs excluded, assets preserved, SKILL.md name patched via targeted line replace, keyed by id+version+name with mtime staleness; push the cache dir. cfg.skills guard; cfg.skills.urls non-empty -> warning; skip+warn on unreadable SKILL.md / failed copy. Resolved Appendix B: cfg.skills.paths pointing at an individual skill dir works (** matches zero components). Config surface kept to exactly \u00a74.2's 5 keys (cacheRoot internalized as env var after review). Also: fixed the e2e harness orphan leak (detached spawn + process-group SIGTERM->SIGKILL; zero orphans) and root-caused the back-to-back flakiness to /tmp tmpfs exhaustion (not a code bug) -> OCB_TMPDIR routes test scratch to repo .tmp/ on ext4 (npm scripts). Fully delegated in Lead Mode: kio-developer; kio-reviewer NEEDS CHANGES (1 blocker + issues) -> APPROVED after remediation; kio-qa-test-runner. Final: typecheck clean, 230 unit + 28 e2e green, 3x back-to-back stable, zero orphans, /tmp healthy. Mid-session blocker: /tmp filled by non-bridge artifacts halted the harness; user freed space and work resumed.",
+      "completed": "2026-06-05T05:12:51.231861Z",
+      "decisions": [
+        "M1-S4 skills injection: src/skill-inject.ts injectSkills(). Per enabled plugin, scan <installPath>/skills/* subdirs, read each SKILL.md frontmatter name, decide via NameAllocator seeded with collectExistingSkillNames (S2 fs-scan) + intra-run claims. No collision -> push the individual skill dir to cfg.skills.paths (zero copy). Collision -> copy whole dir to ~/.cache/opencode-claude-bridge/skills/<id>/<version>/<name>/ (recursive, dot-dirs excluded, assets preserved), patch SKILL.md name via targeted line replace, push cache dir. Never calls the Skill service. cfg.skills.urls non-empty -> warning. Skip+warn on unreadable SKILL.md / failed copy."
+      ],
+      "discoveries": [
+        "Appendix B granularity RESOLVED: OpenCode globs cfg.skills.paths entries as glob('**/SKILL.md',{cwd:dir}); '**' matches zero path components, so pointing cfg.skills.paths at an INDIVIDUAL skill dir (the one directly holding SKILL.md) is matched and works. Spec \u00a76.3 pseudocode (pushing individual skill dirs) is correct. Verified empirically + against skill/index.ts.",
+        "e2e harness orphan-leak FIXED (todo #7): spawn opencode serve with detached:true (own process group) and teardown via process.kill(-pgid, SIGTERM->SIGKILL), reaping children too. Zero orphans confirmed after back-to-back runs. Also added an isolateCache option + cacheDir on BridgeServer so skills e2e doesn't pollute the real ~/.cache/opencode-claude-bridge.",
+        "Back-to-back e2e flakiness root cause = /tmp tmpfs exhaustion (ENOSPC), NOT a code bug. The machine's small shared /tmp fills (other processes' artifacts); skills e2e suites create the most temp dirs per server (project+claudeBin+cache+home) so they fail first on run #2, and the server's own temp writes failing is why GET /skill returned a non-array. Fix: OCB_TMPDIR env var routes all test temp dirs to repo .tmp/ on ext4; set in package.json test scripts. Run tests via npm scripts (bun run test / test:e2e / test:all) \u2014 raw 'bun test' defaults to os.tmpdir() and can still hit /tmp pressure. No bridge correctness bug.",
+        "Root-cause discovery + remember (tmpdir) entries from the /tmp-exhaustion incident were NOT recorded earlier because the progress CLI's output hit ENOSPC; re-logging now: see below."
+      ],
+      "artifacts": [
+        "injectSkills",
+        "patchSkillName",
+        "collectExistingSkillNames",
+        "skill-inject",
+        "e2e-harness"
+      ]
+    },
+    {
+      "session": "M1-S5",
+      "title": "MCP + LSP injection (opt-in)",
+      "summary": "MCP + LSP injection (opt-in) delivered \u2014 completes all component injection. src/mcp-inject.ts reads each enabled plugin's top-level .mcp.json (mcpServers; NOT plugin.json) into flat cfg.mcp: Claude type:http -> OpenCode {type:remote,url,headers?,oauth?}; stdio/command -> {type:local,command:[cmd,...args],environment?}; ${CLAUDE_PLUGIN_ROOT} resolved in url/command/args/env/headers; oauth passed through verbatim (verified identical camelCase Claude<->OpenCode V1 \u2014 Appendix B closed). src/lsp-inject.ts reads .lsp.json into cfg.lsp: command+args->command[], extensionToLanguage keys->extensions[] (REQUIRED \u2014 mapper returns null + skip/warn if absent, since every bridge name is a 'custom' server per OpenCode V1 schema), initializationOptions/settings->initialization; transport:'socket' skipped+warned. Both gated by allowMcp/allowLsp (default off => inject nothing, no per-entry warnings for opted-out users); cfg.lsp===false respected (skips only LSP, others still inject); names <plugin>-<server> via NameAllocator. Config surface unchanged (\u00a74.2 5 keys). e2e observes real GET /mcp state (entry present as status:failed via command:'false' fixture). Fully delegated in Lead Mode: kio-developer; kio-reviewer NEEDS CHANGES (0 blockers, 5 issues+suggestions) -> APPROVED after remediation (all 6 verified); kio-qa green. Final: typecheck clean, 286 unit + 48 e2e, 3x back-to-back stable, zero orphans. LSP mapping unvalidated against a live .lsp.json (none installed) \u2014 tracked for S7.",
+      "completed": "2026-06-05T06:03:57.127907Z",
+      "decisions": [
+        "M1-S5 MCP+LSP injection: src/mcp-inject.ts + src/lsp-inject.ts, wired after skills. MCP reads <installPath>/.mcp.json mcpServers (flat cfg.mcp guard): Claude type:http->OpenCode {type:remote,url,headers?,oauth?}; stdio/command->{type:local,command:[cmd,...args],environment?}; ${CLAUDE_PLUGIN_ROOT} resolved. LSP reads <installPath>/.lsp.json: command(string)+args->command[], extensionToLanguage keys->extensions[], initializationOptions/settings->initialization. Both gated (allowMcp/allowLsp default off; off=>inject nothing + policy log). cfg.lsp===false respected (skip only LSP step). NameAllocator seeded with existing cfg.mcp/cfg.lsp keys; <plugin>-<server> base. Config surface unchanged (\u00a74.2 5 keys)."
+      ],
+      "discoveries": [
+        "Appendix B items RESOLVED: (1) MCP oauth field names are IDENTICAL Claude<->OpenCode V1 camelCase (clientId, clientSecret, scope, callbackPort, redirectUri) per v1/config/mcp.ts -> no rename, pass-through. (2) Claude LSP source = .lsp.json at plugin root (confirmed in Claude source src/utils/plugins/lspPluginIntegration.ts reading join(plugin.path,'.lsp.json')); Claude also supports inline plugin.json lspServers (NOT read by the bridge - only .lsp.json). No installed plugin on this machine has a live .lsp.json, so the LSP mapping is unvalidated against a real file (open item for S7). Claude .mcp.json remote entries use type:'http' (confirmed across slack/atlassian/zoom)."
+      ],
+      "artifacts": [
+        "injectMcp",
+        "injectLsp",
+        "mcp-inject",
+        "lsp-inject"
+      ]
+    },
+    {
+      "session": "M1-S6",
+      "title": "Multi-track review & remediation",
+      "summary": "Six-track quality review (impl-vs-plan, code quality, unit tests, e2e tests, docs, workarounds) run as 6 parallel subagents (findings in .tasks/handoffs/20260605-080502-s6-track1..6-*.md), triaged and remediated in-branch. Real correctness bugs FIXED: guardSkillsConfig handles missing cfg.skills.paths/urls (V1 optional; was a TypeError unwinding all injectors); mcp/lsp resolveRecordValues no longer throws on non-string JSON values; samePath uses guarded realpath so symlinked project paths match; malformed frontmatter -> parse-error sentinel -> skip+warn (\u00a710, no broken YAML in body); copyDirRecursive skips symlinks (exfiltration guard); mapClaudeLspServer returns a discriminated result. Cleanups: single-sourced version constant (+package.json sync test), dropped stateful /g regex flag, hoisted splitPluginId. Coverage: scripts/coverage-gate.ts enforces a real GLOBAL >=90% floor (funcs+lines) since Bun 1.3.14 bunfig thresholds are per-file and 2 files have irreducible ~75% V8 func artifacts. Tests: 311 unit (+25: index.ts hook \u00a79 warning, quiet-toggle-off, IO-error skip+warn, bare-body agent, symlink-skip, frontmatter-parse-error), 59 e2e (LSP via OpenCode's own log oracles + native-vs-bridge collisions for commands/skills/MCP via planted native cfg/populateHome). Docs: corrected README 'Bridge diagnostics' to honestly state warnings go to stderr (visible only with --print-logs; OpenCode does not capture plugin output to its log), fixed stale docstring/agents-fields/dev-commands. Final: typecheck clean, 311 unit + 59 e2e green 3x back-to-back, coverage gate PASS (95.78%/98.17%), zero orphans. 6 selected quality todos resolved; remaining findings deferred to M2/S7 (#8,#10,#11,#14-19).",
+      "completed": "2026-06-05T07:32:17.604024Z",
+      "decisions": [
+        "M1-S6 six-track review complete (findings in .tasks/handoffs/20260605-080502-s6-track1..6-*.md). Real correctness bugs found to FIX: (1) skill-inject guardSkillsConfig assumes cfg.skills.urls present -> TypeError on {skills:{paths:[]}} (V1 makes both optional); (2) mcp/lsp resolveRecordValues throws on non-string JSON values (numeric headers/env); (3) samePath lexical -> drops symlinked project plugins; (4) malformed frontmatter silently dumped into body (violates \u00a710 skip+warn); (5) copyDirRecursive follows symlinks (exfiltration). Plus: consolidate duplicated version constant, drop stateful /g regex flag, set up bun coverage tooling (97.3% baseline), close unit gaps (index.ts hook untested, quiet-toggle-off, IO-error skip+warn, bare-body agent), strengthen e2e (LSP via /lsp not own-log; MCP collision; native-vs-bridge collision for cmd/agent/skill; harness rmSync footgun + require->import), docs fixes. Deferring to M2/S7: @->_at_ cache key cosmetic, frontmatter/extractSkillName consolidation, honoring disableExternalSkills flags (over-prefix is safe)."
+      ],
+      "discoveries": [
+        "Warning-visibility (todo #3) investigated: bridge logs via console.warn -> stderr. OpenCode does NOT hijack console; under --print-logs (which the e2e harness sets) both OpenCode's own log.info and the bridge's console.warn stream to stderr (harness captures them). In normal TUI use, plugin stderr lands before TUI takeover / in OpenCode's log. Conclusion: console.warn is an acceptable channel; \u00a710 'logs a warning' satisfied; documented in README 'Bridge diagnostics'. No code change. (Reviewer to sanity-check the normal-TUI claim.)",
+        "CORRECTION to prior warning-visibility entry: reviewer verified against OpenCode source (core/src/util/log.ts) that OpenCode does NOT rebind console.* nor capture plugin stdout/stderr. Bridge console.warn goes to the opencode process stderr \u2014 visible only with --print-logs; it does NOT reach ~/.local/state/opencode/log (that file is populated solely by OpenCode's own Log.* calls). So \u00a710 'logs a warning' is met only under --print-logs in normal TUI use. README must state this honestly. Deeper fix (route warnings through a user-visible surface) deferred."
+      ],
+      "artifacts": [
+        "coverage-gate",
+        "frontmatter-parse-error",
+        "guardSkillsConfig",
+        "samePath",
+        "copyDirRecursive"
+      ]
+    },
+    {
+      "session": "M1-S7",
+      "title": "Spec-delivery verification",
+      "summary": "Terminal spec-delivery verification \u2014 the conjunctive hard gate PASSED. Produced the claim-to-code delivery map (\u2026-delivery.md) following the mandatory format: a summary aggregate table + per-section detail tables with file:line code + file:test-name locators. 109 concrete spec claims (\u00a71\u2013\u00a712 + Appendices A/B) mapped to 97 (a) shipped / 9 (b) out-of-scope / 3 (c) tracked-todo / 0 BLOCKERS. The map was independently AUDITED (not just self-reported): a reviewer spot-checked ~15 load-bearing (a) rows against the cited code+tests, re-grepped every \u00a73 out-of-scope item to confirm genuine absence (no union/bridge-managed mode, no CLI/bin, no Claude-hooks bridging, no agent permission field, no tools->permission, no URL-skill collision detection, no output styles), confirmed (c) rows cite real todos+milestones, and found no silently-dropped or partially-delivered claim. Two clerical map defects (grand-total arithmetic; an illegal hybrid status row) were corrected and re-verified to reconcile at 109/97/9/3/0. Appendix B fully reconciled: oauth field names identical Claude<->OpenCode V1 (no rename \u2014 spec text stale, recorded in map, ephemeral spec untouched), per-skill-dir granularity confirmed, projectPath resolved, .lsp.json live-validation tracked -> todo #10/M2. \u00a79/\u00a710 'logs a warning' mapped (a) shipped+tested with the TUI-stderr-visibility limitation tracked (c)->todo #17. Verified opencode runtime is 1.15.10 (in range) \u2014 the verifier's 1.16.5 'finding' was a misread unit-test fixture. Full suite green: typecheck clean, 311 unit + 59 e2e (3x back-to-back) + coverage gate PASS (global 95.78% funcs / 98.17% lines), zero orphan servers. Code unchanged since S6's approved review. All work remains on the working tree, uncommitted (user controls commits).",
+      "completed": "2026-06-05T07:50:01.870254Z",
+      "decisions": [
+        "M1-S7 spec-delivery hard gate PASSED. Delivery map at .tasks/specs/2026-06-04-opencode-claude-bridge-design/2026-06-04-opencode-claude-bridge-design-delivery.md: 109 claims -> 97 (a) shipped / 9 (b) out-of-scope / 3 (c) tracked-todo / 0 BLOCKERS (independently audited for accuracy, not self-reported). All \u00a73 out-of-scope items grep-verified absent; Appendix B reconciled (oauth no-rename, per-skill-dir granularity, projectPath resolved; .lsp.json live-validation -> todo #10/M2). Full suite green (311 unit + 59 e2e x3 back-to-back + coverage gate 95.78%/98.17%). oauth spec-text staleness (snake_case) recorded in map, ephemeral spec not edited. All work remains on the working tree (uncommitted \u2014 user controls commits)."
+      ],
+      "discoveries": [
+        "S7 verifier mis-reported runtime opencode as 1.16.5 \u2014 that string is a UNIT-TEST FIXTURE (version.test.ts:86/88/102 assert the out-of-range warning). Confirmed: opencode --version = 1.15.10 (IN range). The e2e smoke test asserts logHas('untested OpenCode version')===false against the real server and passes, independently proving the runtime is in-range. No range-widening needed; no version issue."
+      ],
+      "artifacts": [
+        "delivery-map"
+      ]
+    }
+  ],
+  "todos": [
+    {
+      "id": 1,
+      "text": "selection.samePath: project-scope matching is lexical (path.resolve only). Harden with fs.realpathSync (guarded try/catch fallback) so symlinked project paths still match. Edge case; relevant once injection consumes project-scoped plugins.",
+      "added_session": "M1-S1",
+      "added_timestamp": "2026-06-04T21:15:29.308011Z",
+      "status": "completed",
+      "selected_session": "M1-S6",
+      "resolved_session": "M1-S6",
+      "resolved_timestamp": "2026-06-05T07:32:03.700397Z"
+    },
+    {
+      "id": 2,
+      "text": "e2e/harness triggerHook: replace fixed Bun.sleep(400) with a log-polling helper (poll logHas until timeout) before M1-S3 adds more e2e cases, to avoid wall-clock flakiness.",
+      "added_session": "M1-S1",
+      "added_timestamp": "2026-06-04T21:15:29.445308Z",
+      "status": "completed",
+      "selected_session": "M1-S2",
+      "resolved_session": "M1-S2",
+      "resolved_timestamp": "2026-06-04T21:48:31.373756Z"
+    },
+    {
+      "id": 3,
+      "text": "Verify plugin console.warn reaches a user-visible surface in normal (non --print-logs) opencode TUI use; if not, route warnings through the SDK logger. M1-S6 (\u00a710 visibility).",
+      "added_session": "M1-S1",
+      "added_timestamp": "2026-06-04T21:15:29.576927Z",
+      "status": "completed",
+      "selected_session": "M1-S6",
+      "resolved_session": "M1-S6",
+      "resolved_timestamp": "2026-06-05T07:32:03.700443Z"
+    },
+    {
+      "id": 4,
+      "text": "Add unit-level coverage for \u00a79 'untested OpenCode version' warning at the index.ts hook level (mocked fetch + fake $), so the version-warning path is asserted close to the hook, not only via checkVersion().",
+      "added_session": "M1-S1",
+      "added_timestamp": "2026-06-04T21:15:29.714656Z",
+      "status": "completed",
+      "selected_session": "M1-S6",
+      "resolved_session": "M1-S6",
+      "resolved_timestamp": "2026-06-05T07:32:03.700449Z"
+    },
+    {
+      "id": 5,
+      "text": "skill-scan: make XDG_CONFIG_HOME injectable via opts (currently read from process.env) for fully hermetic tests. Minor; M1-S6 quality review candidate.",
+      "added_session": "M1-S2",
+      "added_timestamp": "2026-06-04T21:33:26.076689Z",
+      "status": "completed",
+      "selected_session": "M1-S6",
+      "resolved_session": "M1-S6",
+      "resolved_timestamp": "2026-06-05T07:32:03.700454Z"
+    },
+    {
+      "id": 6,
+      "text": "inject: ${CLAUDE_PLUGIN_ROOT} is resolved in command template + description and agent prompt body, but NOT in agent frontmatter scalar fields (e.g. model). Unlikely in practice; resolve there too for completeness. M1-S6 candidate.",
+      "added_session": "M1-S3",
+      "added_timestamp": "2026-06-04T22:10:43.426015Z",
+      "status": "dropped",
+      "resolved_session": "M1-S3",
+      "resolved_timestamp": "2026-06-04T22:11:28.464568Z"
+    },
+    {
+      "id": 7,
+      "text": "e2e harness teardown leaks an orphan 'opencode serve' (child/process-group not reaped by SIGTERM->SIGKILL of the main proc). Fix stop() to kill the whole process group; verify zero orphans after back-to-back runs. Do FIRST in M1-S4 before adding skills e2e.",
+      "added_session": "M1-S3",
+      "added_timestamp": "2026-06-04T22:22:48.242646Z",
+      "status": "completed",
+      "selected_session": "M1-S4",
+      "resolved_session": "M1-S4",
+      "resolved_timestamp": "2026-06-04T22:46:02.297229Z"
+    },
+    {
+      "id": 8,
+      "text": "skill cache GC: prune <cacheRoot>/<id>/<old-version>/ orphan dirs when a plugin upgrades (collision copies keyed by id+version are never cleaned up). M2 or M1-S7 candidate.",
+      "added_session": "M1-S4",
+      "added_timestamp": "2026-06-04T22:46:02.460470Z",
+      "status": "deferred"
+    },
+    {
+      "id": 9,
+      "text": "skill-inject copyDirRecursive follows file symlinks (fs.copyFile resolves target) \u2014 a malicious skill could symlink assets to e.g. /etc/passwd into the bridge cache. Skills are Claude-vetted (low risk) but consider dropping/validating symlinks. Hardening; M1-S6 candidate.",
+      "added_session": "M1-S4",
+      "added_timestamp": "2026-06-04T22:46:02.603074Z",
+      "status": "completed",
+      "selected_session": "M1-S6",
+      "resolved_session": "M1-S6",
+      "resolved_timestamp": "2026-06-05T07:32:03.700458Z"
+    },
+    {
+      "id": 10,
+      "text": "LSP injection: validate the .lsp.json -> cfg.lsp mapping against a REAL installed plugin that ships a .lsp.json (none available on this machine now). Also consider reading inline plugin.json 'lspServers' (Claude supports it; bridge currently reads only .lsp.json). S7/M2.",
+      "added_session": "M1-S5",
+      "added_timestamp": "2026-06-05T05:41:07.167934Z",
+      "status": "deferred"
+    },
+    {
+      "id": 11,
+      "text": "S7 spec reconciliation: spec \u00a76.4/Appendix B says MCP oauth maps to snake_case (e.g. client_id), but it was verified that OpenCode V1 uses identical camelCase to Claude (no rename). Code is correct; the delivery map should record this resolution (do NOT edit the ephemeral spec mid-stream).",
+      "added_session": "M1-S5",
+      "added_timestamp": "2026-06-05T05:42:55.200910Z",
+      "status": "completed",
+      "selected_session": "M1-S7",
+      "resolved_session": "M1-S7",
+      "resolved_timestamp": "2026-06-05T07:49:46.701128Z"
+    },
+    {
+      "id": 12,
+      "text": "Test coverage (S6): pin the quiet-toggle-off contract \u2014 a malformed .mcp.json with allowMcp:false (and .lsp.json with allowLsp:false) must emit ZERO warnings. Code is correct (countMcpServersQuiet/countLspServersQuiet) but untested; a regression could silently re-introduce validation in the off-path.",
+      "added_session": "M1-S5",
+      "added_timestamp": "2026-06-05T06:03:17.724323Z",
+      "status": "completed",
+      "selected_session": "M1-S6",
+      "resolved_session": "M1-S6",
+      "resolved_timestamp": "2026-06-05T07:32:03.700462Z"
+    },
+    {
+      "id": 13,
+      "text": "Trivial perf/cleanup (S6): hoist splitPluginId(plugin.id).plugin to a const outside the inner per-server loop in src/lsp-inject.ts (~:284); currently recomputed per entry.",
+      "added_session": "M1-S5",
+      "added_timestamp": "2026-06-05T06:03:17.865064Z",
+      "status": "completed",
+      "selected_session": "M1-S6",
+      "resolved_session": "M1-S6",
+      "resolved_timestamp": "2026-06-05T07:32:03.700466Z"
+    },
+    {
+      "id": 14,
+      "text": "M2: restructure skill bridge-cache key from <id-with-@_at_> to splitPluginId-based <marketplace>/<plugin>/<version>/<skill> for consistency (cosmetic; cache is regenerable).",
+      "added_session": "M1-S6",
+      "added_timestamp": "2026-06-05T06:16:44.980325Z",
+      "status": "deferred"
+    },
+    {
+      "id": 15,
+      "text": "M2: consolidate the two overlapping zero-dep YAML readers (src/frontmatter.ts parseFrontmatter + src/skill-scan.ts extractSkillName) into one shared frontmatter helper (after S6 fixes their parse-error/quote handling).",
+      "added_session": "M1-S6",
+      "added_timestamp": "2026-06-05T06:16:45.115068Z",
+      "status": "deferred"
+    },
+    {
+      "id": 16,
+      "text": "M2 fidelity: collectExistingSkillNames should honor OpenCode's disableExternalSkills/disableClaudeCodeSkills config flags so the existing-name set matches OpenCode's actual discovery (currently over-prefixes when those are set \u2014 safe direction, but unnecessary renames).",
+      "added_session": "M1-S6",
+      "added_timestamp": "2026-06-05T06:16:45.259891Z",
+      "status": "deferred"
+    },
+    {
+      "id": 17,
+      "text": "M2/spec: bridge warnings (console.warn->stderr) are only visible with --print-logs in normal TUI use; OpenCode doesn't capture plugin stderr to its log file. Consider routing diagnostics through a user-visible surface (SDK event, or a synthetic cfg entry) OR amend spec \u00a79/\u00a710 to scope 'logged' to --print-logs. (Track1 BLOCKER-1 deeper fix.)",
+      "added_session": "M1-S6",
+      "added_timestamp": "2026-06-05T07:02:10.635715Z",
+      "status": "deferred"
+    },
+    {
+      "id": 18,
+      "text": "M2: MCP native-collision e2e can only assert the native key is PRESENT, not byte-untouched (/mcp route exposes status only, not command/url). Tighten when a richer route/config-snapshot is available.",
+      "added_session": "M1-S6",
+      "added_timestamp": "2026-06-05T07:02:10.810850Z",
+      "status": "deferred"
+    },
+    {
+      "id": 19,
+      "text": "M2: cfg.lsp === true is silently normalized to {} (Track2 Issue7); V1 accepts boolean|record. Likely benign but assess/document whether 'lsp:true' opt-in intent should be preserved.",
+      "added_session": "M1-S6",
+      "added_timestamp": "2026-06-05T07:02:10.955650Z",
+      "status": "deferred"
+    }
+  ],
+  "plan": ".tasks/plan/session-plan.md",
+  "remember": [
+    {
+      "id": 1,
+      "text": "Operating UNSUPERVISED in Lead Mode for the rest of this run: make autonomous decisions, delegate all execution to subagents, do NOT ask the user. Resolve subagent CLARIFY: myself as architect; use 'block' only for genuine user-required blockers (credentials, external decisions).",
+      "added_at": "2026-06-04T21:20:16.668298Z",
+      "session": "M1-S2"
+    },
+    {
+      "id": 2,
+      "text": "Run this project's tests via npm scripts: 'bun run test' (unit), 'bun run test:e2e', 'bun run test:all' \u2014 they set OCB_TMPDIR=.tmp to route test temp dirs to the repo's .tmp/ (ext4), avoiding the small shared /tmp tmpfs that causes ENOSPC and intermittent back-to-back e2e failures. Raw 'bun test e2e/' defaults to os.tmpdir() (/tmp) and can fail under /tmp pressure.",
+      "added_at": "2026-06-04T23:14:41.055480Z",
+      "session": "M1-S4"
+    }
+  ]
+}
