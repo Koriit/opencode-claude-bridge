@@ -98,15 +98,19 @@ When a collision is detected (the bare name is already taken by a native OpenCod
 or an earlier-processed plugin), the entire skill directory is copied to the bridge cache at:
 
 ```text
-~/.cache/opencode-claude-bridge/skills/
+~/.cache/opencode-claude-bridge/skills/<marketplace>/<plugin>/<version>/<allocatedName>/
 ```
 
-The copy's `SKILL.md` frontmatter `name` is patched to the prefixed name; all other files
-(assets, sub-directories) are preserved so relative references within the skill continue to work.
-The `.git` directory and other dot-directories are excluded from copies.
+where `<marketplace>` and `<plugin>` are the two halves of the plugin id (e.g. `acme` and
+`my-plugin` from `my-plugin@acme`). The copy's `SKILL.md` frontmatter `name` is patched to
+the prefixed name; all other files (assets, sub-directories) are preserved so relative references
+within the skill continue to work. The `.git` directory and other dot-directories are excluded
+from copies.
 
-Copies are keyed by plugin `id`+`version`+allocated name and regenerated when the source is newer.
-The bridge cache is distinct from OpenCode's own `~/.cache/opencode/skills`.
+Copies are keyed by `<marketplace>/<plugin>/<version>/<allocatedName>` and regenerated when the
+source is newer. When the plugin version changes, the old version's cache directories are pruned
+automatically (version GC). The bridge cache is distinct from OpenCode's own
+`~/.cache/opencode/skills`.
 
 To override the cache location (e.g. in CI or test environments), set the
 `OPENCODE_CLAUDE_BRIDGE_CACHE_ROOT` environment variable before starting OpenCode.

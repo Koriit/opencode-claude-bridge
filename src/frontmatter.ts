@@ -9,7 +9,7 @@
  * This deliberately avoids adding a `gray-matter` or any other npm dependency.
  */
 
-const FENCE = "---"
+export const FRONTMATTER_FENCE = "---"
 
 /**
  * A parsed frontmatter block: the extracted flat scalar values and the markdown body
@@ -30,6 +30,39 @@ export interface ParsedFrontmatter {
  */
 export const FRONTMATTER_PARSE_ERROR: unique symbol = Symbol("FRONTMATTER_PARSE_ERROR")
 export type FrontmatterParseError = typeof FRONTMATTER_PARSE_ERROR
+
+/**
+ * Split content into lines and locate the frontmatter fence boundaries.
+ *
+ * Returns:
+ *   - `null` if the file does not begin with a `---` fence (no frontmatter).
+ *   - `FRONTMATTER_PARSE_ERROR` if an opening fence is found but never closed.
+ *   - `{ lines, closingIdx }` on success — `lines[1..closingIdx-1]` are the
+ *     frontmatter key/value lines; `lines[closingIdx+1..]` is the body.
+ *
+ * This is the shared fence-detection core used by both `parseFrontmatter`
+ * (in this module) and `extractSkillName` (in `skill-scan.ts`). Both callers
+ * need fence detection but have different field-extraction semantics, so the
+ * extraction itself is left to each call site.
+ */
+export function locateFrontmatter(
+  content: string,
+): { lines: string[]; closingIdx: number } | null | FrontmatterParseError {
+  const lines = content.split(/\r?\n/)
+
+  if (lines[0]?.trim() !== FRONTMATTER_FENCE) return null
+
+  let closingIdx = -1
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i]?.trim() === FRONTMATTER_FENCE) {
+      closingIdx = i
+      break
+    }
+  }
+  if (closingIdx === -1) return FRONTMATTER_PARSE_ERROR
+
+  return { lines, closingIdx }
+}
 
 /**
  * Parse a markdown file's YAML frontmatter and return the flat scalar fields plus the body.
@@ -56,23 +89,10 @@ export type FrontmatterParseError = typeof FRONTMATTER_PARSE_ERROR
 export function parseFrontmatter(
   content: string,
 ): ParsedFrontmatter | null | FrontmatterParseError {
-  const lines = content.split(/\r?\n/)
+  const located = locateFrontmatter(content)
+  if (located === null || located === FRONTMATTER_PARSE_ERROR) return located
 
-  // The file must start with the `---` fence at column 0.
-  if (lines[0]?.trim() !== FENCE) return null
-
-  // Find the closing fence.
-  let closingIdx = -1
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i]?.trim() === FENCE) {
-      closingIdx = i
-      break
-    }
-  }
-  // An unclosed fence means the file is malformed — returning null would silently
-  // inject the broken YAML as the template/prompt body, violating §10.
-  if (closingIdx === -1) return FRONTMATTER_PARSE_ERROR
-
+  const { lines, closingIdx } = located
   const data: Record<string, string | boolean | number> = {}
   const fmLines = lines.slice(1, closingIdx)
 

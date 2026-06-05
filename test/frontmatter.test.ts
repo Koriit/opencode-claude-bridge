@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { parseFrontmatter, FRONTMATTER_PARSE_ERROR, type ParsedFrontmatter } from "../src/frontmatter.js"
+import {
+  parseFrontmatter,
+  locateFrontmatter,
+  FRONTMATTER_PARSE_ERROR,
+  type ParsedFrontmatter,
+} from "../src/frontmatter.js"
 
 /** Narrow to ParsedFrontmatter, failing the test if the result is null or parse-error. */
 function ok(r: ReturnType<typeof parseFrontmatter>): ParsedFrontmatter {
@@ -159,5 +164,33 @@ describe("parseFrontmatter — Windows line endings", () => {
     const r = ok(parseFrontmatter("---\r\ndescription: hi\r\n---\r\nbody"))
     expect(r.data["description"]).toBe("hi")
     expect(r.body).toBe("body")
+  })
+})
+
+// ── locateFrontmatter ─────────────────────────────────────────────────────────
+
+describe("locateFrontmatter — shared fence-detection helper", () => {
+  test("returns null when file does not start with ---", () => {
+    expect(locateFrontmatter("just markdown")).toBeNull()
+  })
+
+  test("returns FRONTMATTER_PARSE_ERROR when opening fence has no closing fence", () => {
+    expect(locateFrontmatter("---\nkey: val\nbody")).toBe(FRONTMATTER_PARSE_ERROR)
+  })
+
+  test("returns lines and closingIdx on a well-formed frontmatter block", () => {
+    const result = locateFrontmatter("---\nname: foo\n---\nbody")
+    expect(result).not.toBeNull()
+    expect(result).not.toBe(FRONTMATTER_PARSE_ERROR)
+    if (result === null || result === FRONTMATTER_PARSE_ERROR) return // narrow
+    expect(result.closingIdx).toBe(2)
+    expect(result.lines[1]).toBe("name: foo")
+  })
+
+  test("body lines are accessible via lines[closingIdx+1..]", () => {
+    const result = locateFrontmatter("---\nkey: val\n---\nbody line")
+    if (result === null || result === FRONTMATTER_PARSE_ERROR) throw new Error("unexpected")
+    const body = result.lines.slice(result.closingIdx + 1).join("\n")
+    expect(body).toBe("body line")
   })
 })

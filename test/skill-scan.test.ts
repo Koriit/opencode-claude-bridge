@@ -427,3 +427,151 @@ describe("collectExistingSkillNames — collision detection", () => {
     })
   })
 })
+
+// ── collectExistingSkillNames — disable flags ────────────────────────────────
+
+describe("collectExistingSkillNames — disableExternalSkills flag", () => {
+  test("disableExternalSkills skips both .claude and .agents global dirs", async () => {
+    await withTempDir(async (tmp) => {
+      const home = path.join(tmp, "home")
+      await writeSkillMd(path.join(home, ".claude", "skills", "s1"), "SKILL.md", "claude-skill")
+      await writeSkillMd(path.join(home, ".agents", "skills", "s2"), "SKILL.md", "agents-skill")
+
+      const names = await collectExistingSkillNames({
+        home,
+        projectDir: path.join(tmp, "project"),
+        disableExternalSkills: true,
+      })
+      expect(names.has("claude-skill")).toBe(false)
+      expect(names.has("agents-skill")).toBe(false)
+    })
+  })
+
+  test("disableExternalSkills skips project-upward .claude and .agents dirs", async () => {
+    await withTempDir(async (tmp) => {
+      const home = path.join(tmp, "home")
+      const projectDir = path.join(tmp, "workspace", "project")
+      await fs.mkdir(projectDir, { recursive: true })
+      await writeSkillMd(
+        path.join(tmp, "workspace", ".claude", "skills", "proj-claude"),
+        "SKILL.md",
+        "proj-claude-skill",
+      )
+      await writeSkillMd(
+        path.join(tmp, "workspace", ".agents", "skills", "proj-agents"),
+        "SKILL.md",
+        "proj-agents-skill",
+      )
+
+      const names = await collectExistingSkillNames({
+        home,
+        projectDir,
+        disableExternalSkills: true,
+      })
+      expect(names.has("proj-claude-skill")).toBe(false)
+      expect(names.has("proj-agents-skill")).toBe(false)
+      // Built-ins still present
+      expect(names.has("customize-opencode")).toBe(true)
+    })
+  })
+
+  test("without disableExternalSkills, both dirs are scanned (baseline)", async () => {
+    await withTempDir(async (tmp) => {
+      const home = path.join(tmp, "home")
+      await writeSkillMd(path.join(home, ".claude", "skills", "s1"), "SKILL.md", "claude-skill")
+      await writeSkillMd(path.join(home, ".agents", "skills", "s2"), "SKILL.md", "agents-skill")
+
+      const names = await collectExistingSkillNames({
+        home,
+        projectDir: path.join(tmp, "project"),
+      })
+      expect(names.has("claude-skill")).toBe(true)
+      expect(names.has("agents-skill")).toBe(true)
+    })
+  })
+})
+
+describe("collectExistingSkillNames — disableClaudeCodeSkills flag", () => {
+  test("disableClaudeCodeSkills skips .claude dirs but still scans .agents", async () => {
+    await withTempDir(async (tmp) => {
+      const home = path.join(tmp, "home")
+      await writeSkillMd(path.join(home, ".claude", "skills", "s1"), "SKILL.md", "claude-skill")
+      await writeSkillMd(path.join(home, ".agents", "skills", "s2"), "SKILL.md", "agents-skill")
+
+      const names = await collectExistingSkillNames({
+        home,
+        projectDir: path.join(tmp, "project"),
+        disableClaudeCodeSkills: true,
+      })
+      expect(names.has("claude-skill")).toBe(false)
+      expect(names.has("agents-skill")).toBe(true)
+    })
+  })
+
+  test("disableClaudeCodeSkills also skips project-upward .claude", async () => {
+    await withTempDir(async (tmp) => {
+      const home = path.join(tmp, "home")
+      const projectDir = path.join(tmp, "workspace", "project")
+      await fs.mkdir(projectDir, { recursive: true })
+      await writeSkillMd(
+        path.join(tmp, "workspace", ".claude", "skills", "proj-s"),
+        "SKILL.md",
+        "proj-claude-skill",
+      )
+      await writeSkillMd(
+        path.join(tmp, "workspace", ".agents", "skills", "proj-a"),
+        "SKILL.md",
+        "proj-agents-skill",
+      )
+
+      const names = await collectExistingSkillNames({
+        home,
+        projectDir,
+        disableClaudeCodeSkills: true,
+      })
+      expect(names.has("proj-claude-skill")).toBe(false)
+      expect(names.has("proj-agents-skill")).toBe(true)
+    })
+  })
+
+  test("disableExternalSkills takes precedence: both dirs skipped even with disableClaudeCodeSkills false", async () => {
+    await withTempDir(async (tmp) => {
+      const home = path.join(tmp, "home")
+      await writeSkillMd(path.join(home, ".claude", "skills", "s1"), "SKILL.md", "claude-skill")
+      await writeSkillMd(path.join(home, ".agents", "skills", "s2"), "SKILL.md", "agents-skill")
+
+      const names = await collectExistingSkillNames({
+        home,
+        projectDir: path.join(tmp, "project"),
+        disableExternalSkills: true,
+        disableClaudeCodeSkills: false,
+      })
+      // disableExternalSkills wins; neither dir is scanned
+      expect(names.has("claude-skill")).toBe(false)
+      expect(names.has("agents-skill")).toBe(false)
+    })
+  })
+
+  test("name that would have collided is no longer treated as existing when .claude is disabled", async () => {
+    await withTempDir(async (tmp) => {
+      const home = path.join(tmp, "home")
+      // A native skill named "audit" lives in .claude
+      await writeSkillMd(path.join(home, ".claude", "skills", "audit"), "SKILL.md", "audit")
+
+      // With .claude scanning enabled: "audit" is known, a bridge plugin would collide
+      const namesEnabled = await collectExistingSkillNames({
+        home,
+        projectDir: path.join(tmp, "project"),
+      })
+      expect(namesEnabled.has("audit")).toBe(true)
+
+      // With .claude scanning disabled: "audit" is not seen, no collision
+      const namesDisabled = await collectExistingSkillNames({
+        home,
+        projectDir: path.join(tmp, "project"),
+        disableClaudeCodeSkills: true,
+      })
+      expect(namesDisabled.has("audit")).toBe(false)
+    })
+  })
+})

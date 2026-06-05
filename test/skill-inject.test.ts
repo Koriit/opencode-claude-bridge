@@ -477,7 +477,7 @@ describe("injectSkills — cache keying and invalidation", () => {
     expect(secondMtime).toBeGreaterThan(firstMtime)
   })
 
-  test("cache path includes plugin id, version, and allocated name", async () => {
+  test("cache path uses <marketplace>/<plugin>/<version>/<allocatedName> layout", async () => {
     const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
     writePluginSkills(pluginDir, ["my-skill"])
     const cacheRoot = path.join(tmp.dir, "cache")
@@ -489,10 +489,78 @@ describe("injectSkills — cache keying and invalidation", () => {
 
     const mutable = cfg as unknown as { skills: { paths: string[] } }
     const cachedPath = mutable.skills.paths[0]!
-    // Path contains the safe-encoded plugin id (@ → _at_), version, and allocated name
-    expect(cachedPath).toContain("myplugin_at_acme")
-    expect(cachedPath).toContain("2.3.4")
+    // Path must contain marketplace/plugin/version/allocatedName segments
+    expect(cachedPath).toContain(path.join("acme", "myplugin", "2.3.4"))
     expect(cachedPath).toContain("myplugin-my-skill")
+    // Old _at_ encoding must NOT appear
+    expect(cachedPath).not.toContain("_at_")
+  })
+
+  test("GC removes stale version dir on version bump, keeps current version dir", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    writePluginSkills(pluginDir, ["shared-name"])
+    const cacheRoot = path.join(tmp.dir, "cache")
+    const existingNames = new Set(["shared-name"])
+
+    // First injection with version 1.0.0
+    const pluginV1 = fakePlugin("myplugin@acme", pluginDir, "1.0.0")
+    const cfg1 = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills([pluginV1], cfg1, existingNames, { home: tmp.dir, projectDir: tmp.dir, cacheRoot }, makeLogger())
+
+    // Verify the v1 dir was created
+    const mutable1 = cfg1 as unknown as { skills: { paths: string[] } }
+    const v1CachedDir = mutable1.skills.paths[0]!
+    expect(v1CachedDir).toContain("1.0.0")
+    expect(existsSync(v1CachedDir)).toBe(true)
+
+    // Second injection with version 2.0.0
+    const pluginV2 = fakePlugin("myplugin@acme", pluginDir, "2.0.0")
+    const logger2 = makeLogger()
+    const cfg2 = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills([pluginV2], cfg2, existingNames, { home: tmp.dir, projectDir: tmp.dir, cacheRoot }, logger2)
+
+    const mutable2 = cfg2 as unknown as { skills: { paths: string[] } }
+    const v2CachedDir = mutable2.skills.paths[0]!
+    expect(v2CachedDir).toContain("2.0.0")
+
+    // Stale v1.0.0 dir must have been pruned
+    expect(existsSync(v1CachedDir)).toBe(false)
+    // Current v2.0.0 dir must remain
+    expect(existsSync(v2CachedDir)).toBe(true)
+    // A "pruned" log line must have been emitted
+    expect(logger2.infos.some((m) => m.includes("pruned"))).toBe(true)
+  })
+
+  test("GC does not touch other plugins in the same marketplace", async () => {
+    const pluginADir = mkdtempSync(path.join(tmp.dir, "plug-a-"))
+    const pluginBDir = mkdtempSync(path.join(tmp.dir, "plug-b-"))
+    writePluginSkills(pluginADir, ["shared-name"])
+    writePluginSkills(pluginBDir, ["shared-name"])
+    const cacheRoot = path.join(tmp.dir, "cache")
+
+    // Inject pluginA@acme v1, then pluginB@acme v1 — both produce collision copies
+    const existingNames = new Set(["shared-name"])
+    const pluginA = fakePlugin("plugin-a@acme", pluginADir, "1.0.0")
+    const pluginB = fakePlugin("plugin-b@acme", pluginBDir, "1.0.0")
+    const cfg1 = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills([pluginA, pluginB], cfg1, existingNames,
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot }, makeLogger())
+
+    const mutable1 = cfg1 as unknown as { skills: { paths: string[] } }
+    const pathA = mutable1.skills.paths[0]!
+    const pathB = mutable1.skills.paths[1]!
+    expect(existsSync(pathA)).toBe(true)
+    expect(existsSync(pathB)).toBe(true)
+
+    // Now upgrade only pluginA to v2 — pluginB's cache must survive
+    const pluginAV2 = fakePlugin("plugin-a@acme", pluginADir, "2.0.0")
+    const cfg2 = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills([pluginAV2, pluginB], cfg2, existingNames,
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot }, makeLogger())
+
+    // pluginA v1 stale dir is gone; pluginB v1 dir is untouched
+    expect(existsSync(pathA)).toBe(false)
+    expect(existsSync(pathB)).toBe(true)
   })
 })
 

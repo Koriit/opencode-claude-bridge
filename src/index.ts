@@ -51,6 +51,11 @@ export const server: Plugin = async (_input, options) => {
           home,
           projectDir: _input.directory,
           skillsPaths: (cfg as unknown as { skills?: { paths?: string[] } }).skills?.paths,
+          // Mirror OpenCode's RuntimeFlags so the bridge scans the same dirs OpenCode will.
+          disableExternalSkills: process.env["OPENCODE_DISABLE_EXTERNAL_SKILLS"] === "true",
+          disableClaudeCodeSkills:
+            process.env["OPENCODE_DISABLE_CLAUDE_CODE"] === "true" ||
+            process.env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] === "true",
         })
         const skillSummary = await injectSkills(selected, cfg, existingSkillNames, {
           home,

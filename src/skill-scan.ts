@@ -8,15 +8,18 @@ import {
   OPENCODE_SKILL_GLOB,
   PATHS_SKILL_GLOB,
 } from "./opencode-builtins.js"
+import { locateFrontmatter, FRONTMATTER_PARSE_ERROR } from "./frontmatter.js"
 
-// ── Minimal frontmatter extractor ────────────────────────────────────────────
+// ── Skill-name extractor ──────────────────────────────────────────────────────
 //
 // OpenCode uses `gray-matter` for full YAML parsing; the bridge needs only the
-// `name` field. A zero-dependency line-scanner is sufficient: the YAML in a
-// SKILL.md frontmatter block is always a flat key-value mapping in practice, and
-// we only ever look for `name: <value>`.
-
-const FRONTMATTER_FENCE = "---"
+// `name` field. The fence detection is shared with `parseFrontmatter` via
+// `locateFrontmatter`; field extraction is done inline here because `extractSkillName`
+// has semantics that differ from `parseFrontmatter`'s `parseScalar`:
+//   - An unclosed fence returns `null` (not `FRONTMATTER_PARSE_ERROR`) — skill
+//     discovery treats malformed files as "no name".
+//   - Trailing `# comment` is stripped from unquoted name values (YAML line
+//     comments), which `parseScalar` does not do.
 
 /**
  * Extract the `name` field from a `SKILL.md` file's YAML frontmatter.
@@ -28,21 +31,12 @@ const FRONTMATTER_FENCE = "---"
  * This is intentionally minimal — we only need the `name` string.
  */
 export function extractSkillName(content: string): string | null {
-  const lines = content.split(/\r?\n/)
+  const located = locateFrontmatter(content)
+  // Both "no fence" and "unclosed fence" map to null — skill discovery skips
+  // files that don't have a complete, parseable frontmatter block.
+  if (located === null || located === FRONTMATTER_PARSE_ERROR) return null
 
-  // The file must start with `---` (leading whitespace is not part of the YAML
-  // spec for document markers, so we require it at column 0).
-  if (lines[0]?.trim() !== FRONTMATTER_FENCE) return null
-
-  let closingIdx = -1
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i]?.trim() === FRONTMATTER_FENCE) {
-      closingIdx = i
-      break
-    }
-  }
-  if (closingIdx === -1) return null
-
+  const { lines, closingIdx } = located
   const frontmatter = lines.slice(1, closingIdx)
   for (const line of frontmatter) {
     // Match `name: <value>` only on non-indented lines (no leading whitespace).
@@ -205,6 +199,32 @@ export interface SkillScanOptions {
    * hermetic regardless of the host's real `XDG_CONFIG_HOME` value.
    */
   xdgConfigHome?: string
+  /**
+   * Mirror of OpenCode's `OPENCODE_DISABLE_EXTERNAL_SKILLS` runtime flag.
+   *
+   * When `true`, skip ALL external skill roots: neither the global `~/.claude` /
+   * `~/.agents` dirs nor the project-upward `.claude` / `.agents` walk is scanned.
+   * This matches `discoverSkills`'s `disableExternalSkills` branch (`skill/index.ts`).
+   *
+   * Populate from `process.env["OPENCODE_DISABLE_EXTERNAL_SKILLS"] === "true"` in
+   * the hook so the bridge sees the same discovery set OpenCode does.
+   */
+  disableExternalSkills?: boolean
+  /**
+   * Mirror of OpenCode's combined `OPENCODE_DISABLE_CLAUDE_CODE` /
+   * `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` runtime flag.
+   *
+   * When `true` (and `disableExternalSkills` is false), only `.claude` is removed
+   * from the external dirs list — `.agents` is still scanned. This matches
+   * `discoverSkills`'s `disableClaudeCodeSkills` branch (`skill/index.ts`).
+   *
+   * Populate from:
+   * ```
+   * process.env["OPENCODE_DISABLE_CLAUDE_CODE"] === "true" ||
+   * process.env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] === "true"
+   * ```
+   */
+  disableClaudeCodeSkills?: boolean
 }
 
 /**
@@ -231,15 +251,26 @@ export async function collectExistingSkillNames(opts: SkillScanOptions): Promise
   //   + project-upward .claude, .agents dirs
   // Pattern: `skills/**/SKILL.md`
   // Source: skill/index.ts:185-203
+  //
+  // Guarded by OpenCode's runtime flags (env vars):
+  //   `disableExternalSkills`  → skip the entire block
+  //   `disableClaudeCodeSkills`→ skip only .claude; .agents still scanned
 
-  const externalGlobalRoots = EXTERNAL_SKILL_ROOTS.map((dir) => path.join(opts.home, dir))
-  for (const root of externalGlobalRoots) {
-    await scanSkillsUnder(root, EXTERNAL_SKILL_GLOB, names)
-  }
+  if (!opts.disableExternalSkills) {
+    // Determine which external roots to scan, mirroring OpenCode's externalDirs logic.
+    const externalRoots: readonly string[] = opts.disableClaudeCodeSkills
+      ? EXTERNAL_SKILL_ROOTS.filter((dir) => dir !== ".claude")
+      : EXTERNAL_SKILL_ROOTS
 
-  const upwardExternalDirs = await walkUp(EXTERNAL_SKILL_ROOTS, opts.projectDir)
-  for (const root of upwardExternalDirs) {
-    await scanSkillsUnder(root, EXTERNAL_SKILL_GLOB, names)
+    const externalGlobalRoots = externalRoots.map((dir) => path.join(opts.home, dir))
+    for (const root of externalGlobalRoots) {
+      await scanSkillsUnder(root, EXTERNAL_SKILL_GLOB, names)
+    }
+
+    const upwardExternalDirs = await walkUp(externalRoots, opts.projectDir)
+    for (const root of upwardExternalDirs) {
+      await scanSkillsUnder(root, EXTERNAL_SKILL_GLOB, names)
+    }
   }
 
   // ── 2. OpenCode config dirs ───────────────────────────────────────────────

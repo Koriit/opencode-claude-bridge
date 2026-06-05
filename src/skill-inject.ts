@@ -12,8 +12,9 @@
  *   copy's `SKILL.md` frontmatter `name` to the prefixed name, then push the copy.
  *
  * The bridge cache lives at `~/.cache/opencode-claude-bridge/skills/` (override via
- * `cacheRoot` option for hermetic tests). Each copy is keyed by `<id>/<version>/<name>`
- * and regenerated when the source is newer than the cached copy.
+ * `cacheRoot` option for hermetic tests). Each copy is keyed by
+ * `<marketplace>/<plugin>/<version>/<allocatedName>` and regenerated when the source is
+ * newer. Stale version directories (from prior plugin upgrades) are pruned on each run.
  *
  * Design constraints:
  * - Do NOT call `Skill.Service.all()` or any OpenCode Skill service — it would force the
@@ -27,7 +28,7 @@ import os from "node:os"
 import path from "node:path"
 import type { Config } from "@opencode-ai/plugin"
 import { extractSkillName } from "./skill-scan.js"
-import { NameAllocator } from "./naming.js"
+import { NameAllocator, splitPluginId } from "./naming.js"
 import type { Logger } from "./logger.js"
 import type { ClaudePlugin } from "./types.js"
 
@@ -141,20 +142,95 @@ async function copyDirRecursive(srcDir: string, dstDir: string, logger: Logger):
   }
 }
 
+// ── Path segment sanitization ─────────────────────────────────────────────────
+
+/**
+ * Sanitize a single path segment so a hostile plugin id/version cannot escape
+ * the cache root. Rules:
+ *   - Replace every `/` (path separator) with `_`
+ *   - Replace every `..` component with `__` (prevents parent traversal)
+ *   - Strip a leading `.` (prevents hidden-file names in the cache dir)
+ *   - Replace every `\` (Windows path separator) with `_`
+ *
+ * The input is always a non-empty string; the output is a safe, flat filename.
+ */
+function sanitizeCacheSegment(segment: string): string {
+  return segment
+    .replace(/\\/g, "_")      // Windows path separators
+    .replace(/\//g, "_")      // Unix path separators
+    .replace(/\.\./g, "__")   // parent-traversal sequences
+    .replace(/^\./, "_")      // leading dot → hidden file prevention
+}
+
 // ── Cache key / staleness ─────────────────────────────────────────────────────
 
 /**
  * Return the bridge-cache directory for a specific (plugin, skill) combination.
  *
- * Key: `<cacheRoot>/<pluginId>/<pluginVersion>/<skillName>/`
+ * Key: `<cacheRoot>/<marketplace>/<plugin>/<version>/<allocatedName>/`
  *
- * `pluginId` has the form `name@marketplace` and may contain characters that are
- * unsafe in directory names on some filesystems. We replace `@` with `_at_` so
- * the path is portable without any encoding roundtrip ambiguity.
+ * `<marketplace>` and `<plugin>` are derived by splitting the plugin id via
+ * `splitPluginId`. Every segment is sanitized defensively so a hostile id
+ * cannot escape the cache root via path traversal.
  */
 function cacheDirForSkill(cacheRoot: string, plugin: ClaudePlugin, skillName: string): string {
-  const safeId = plugin.id.replace("@", "_at_")
-  return path.join(cacheRoot, safeId, plugin.version, skillName)
+  const { plugin: pluginPart, marketplace } = splitPluginId(plugin.id)
+  return path.join(
+    cacheRoot,
+    sanitizeCacheSegment(marketplace),
+    sanitizeCacheSegment(pluginPart),
+    sanitizeCacheSegment(plugin.version),
+    skillName,
+  )
+}
+
+/**
+ * Prune stale version directories under `<cacheRoot>/<marketplace>/<plugin>/`.
+ *
+ * After writing the current-version directory, any sibling `<other-version>/`
+ * directories that belong to the SAME plugin (same marketplace + plugin segment)
+ * but carry a different version string are removed. This cleans up copies left
+ * by prior plugin upgrades.
+ *
+ * Only other-version dirs are touched — neighboring marketplace or plugin dirs
+ * are never affected. GC failures are skip+warn, never thrown.
+ */
+async function gcOldVersionDirs(
+  cacheRoot: string,
+  plugin: ClaudePlugin,
+  currentVersion: string,
+  logger: Logger,
+): Promise<void> {
+  const { plugin: pluginPart, marketplace } = splitPluginId(plugin.id)
+  const pluginCacheDir = path.join(
+    cacheRoot,
+    sanitizeCacheSegment(marketplace),
+    sanitizeCacheSegment(pluginPart),
+  )
+
+  let entries: import("node:fs").Dirent[]
+  try {
+    entries = await fs.readdir(pluginCacheDir, { withFileTypes: true })
+  } catch {
+    return // directory does not exist yet — nothing to GC
+  }
+
+  const safeCurrentVersion = sanitizeCacheSegment(currentVersion)
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    if (entry.name === safeCurrentVersion) continue // keep current version
+
+    const staleDir = path.join(pluginCacheDir, entry.name)
+    try {
+      await fs.rm(staleDir, { recursive: true, force: true })
+      logger.info(`pruned stale cache version "${staleDir}" for plugin "${plugin.id}"`)
+    } catch (err) {
+      logger.warn(
+        `could not prune stale cache version "${staleDir}" for plugin "${plugin.id}" (${err instanceof Error ? err.message : String(err)}); skipping`,
+        { fatalInStrict: false },
+      )
+    }
+  }
 }
 
 /**
@@ -256,6 +332,11 @@ async function injectPluginSkills(
   const pluginSkillsDir = path.join(plugin.installPath, "skills")
   const subdirs = await listSubdirs(pluginSkillsDir)
   if (subdirs.length === 0) return
+
+  // GC stale version directories for this plugin once per injection run,
+  // before materializing any new copies. This removes copies left by previous
+  // plugin versions. Failure is non-fatal (skip+warn).
+  await gcOldVersionDirs(cacheRoot, plugin, plugin.version, logger)
 
   for (const subdir of subdirs) {
     const skillDir = path.join(pluginSkillsDir, subdir)
