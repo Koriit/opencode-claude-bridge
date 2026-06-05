@@ -1,0 +1,45 @@
+{
+  "name": "opencode-claude-bridge",
+  "version": "0.1.0",
+  "description": "An OpenCode plugin that bridges enabled Claude Code plugins (commands, agents, skills, MCP, LSP) into OpenCode at runtime, namespaced so they never shadow your existing items.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "OCB_TMPDIR=.tmp bun test test/",
+    "test:e2e": "OCB_TMPDIR=.tmp bun test e2e/",
+    "test:all": "OCB_TMPDIR=.tmp bun test",
+    "test:coverage": "bun run scripts/coverage-gate.ts"
+  },
+  "keywords": [
+    "opencode",
+    "claude",
+    "claude-code",
+    "plugin",
+    "bridge"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "opencode": {
+    "supportedRange": ">=1.15.0 <1.16.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.15.13",
+    "@opencode-ai/sdk": "1.15.13",
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  }
+}
