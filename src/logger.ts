@@ -24,6 +24,8 @@ export interface Logger {
    * `fatalInStrict: false` is passed.
    */
   warn(msg: string, opts?: WarnOptions): void
+  /** Returns `true` if at least one `warn()` call was made on this logger instance. */
+  hadWarnings(): boolean
 }
 
 /**
@@ -32,16 +34,21 @@ export interface Logger {
  * error propagate so OpenCode surfaces a hard failure (design §10).
  */
 export function createLogger(strict: boolean): Logger {
+  let warningCount = 0
   return {
     info(msg: string): void {
       console.log(`${LOG_PREFIX} ${msg}`)
     },
     warn(msg: string, opts?: WarnOptions): void {
       const fatalInStrict = opts?.fatalInStrict ?? true
+      warningCount++
       if (strict && fatalInStrict) {
         throw new BridgeError(msg)
       }
       console.warn(`${LOG_PREFIX} warning: ${msg}`)
+    },
+    hadWarnings(): boolean {
+      return warningCount > 0
     },
   }
 }

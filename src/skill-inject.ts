@@ -154,7 +154,7 @@ async function copyDirRecursive(srcDir: string, dstDir: string, logger: Logger):
  *
  * The input is always a non-empty string; the output is a safe, flat filename.
  */
-function sanitizeCacheSegment(segment: string): string {
+export function sanitizeCacheSegment(segment: string): string {
   return segment
     .replace(/\\/g, "_")      // Windows path separators
     .replace(/\//g, "_")      // Unix path separators

@@ -9,7 +9,7 @@ function recordingLogger(): { logger: Logger; warnings: string[] } {
   const warnings: string[] = []
   return {
     warnings,
-    logger: { info: () => {}, warn: (m) => warnings.push(m) },
+    logger: { info: () => {}, warn: (m) => warnings.push(m), hadWarnings: () => warnings.length > 0 },
   }
 }
 

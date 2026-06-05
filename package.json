@@ -16,6 +16,7 @@
     "dist"
   ],
   "scripts": {
+    "clean": "rm -rf dist .tmp",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "OCB_TMPDIR=.tmp bun test test/",

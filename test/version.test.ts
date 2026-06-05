@@ -68,9 +68,8 @@ describe("checkVersion warnings", () => {
   let warnings: string[]
   const logger = {
     info: () => {},
-    warn: (msg: string) => {
-      warnings.push(msg)
-    },
+    warn: (msg: string) => { warnings.push(msg) },
+    hadWarnings: () => warnings.length > 0,
   }
   // reset before each via fresh array
   function collect(version: string | null): string[] {

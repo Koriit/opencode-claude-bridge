@@ -36,6 +36,7 @@ function makeLogger(): Logger & { warnings: string[]; infos: string[] } {
     warn(msg: string) {
       warnings.push(msg)
     },
+    hadWarnings() { return warnings.length > 0 },
   }
 }
 
@@ -561,6 +562,133 @@ describe("injectSkills — cache keying and invalidation", () => {
     // pluginA v1 stale dir is gone; pluginB v1 dir is untouched
     expect(existsSync(pathA)).toBe(false)
     expect(existsSync(pathB)).toBe(true)
+  })
+
+  test("GC does not touch other marketplaces (boundary safety)", async () => {
+    const pluginZDir = mkdtempSync(path.join(tmp.dir, "plug-z-"))
+    const pluginADir = mkdtempSync(path.join(tmp.dir, "plug-a-"))
+    writePluginSkills(pluginZDir, ["shared-name"])
+    writePluginSkills(pluginADir, ["shared-name"])
+    const cacheRoot = path.join(tmp.dir, "cache")
+
+    const existingNames = new Set(["shared-name"])
+
+    // Inject plugin-z@mkt-B v1 — creates mkt-B/plugin-z/1.0.0/ in cache
+    const pluginZ = fakePlugin("plugin-z@mkt-B", pluginZDir, "1.0.0")
+    const cfgZ = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills([pluginZ], cfgZ, existingNames,
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot }, makeLogger())
+
+    const mutableZ = cfgZ as unknown as { skills: { paths: string[] } }
+    const pathZ = mutableZ.skills.paths[0]!
+    expect(existsSync(pathZ)).toBe(true)
+
+    // Inject plugin-a@mkt-A v1, then v2 — GC should only touch mkt-A/plugin-a/
+    const pluginAv1 = fakePlugin("plugin-a@mkt-A", pluginADir, "1.0.0")
+    const cfgA1 = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills([pluginAv1], cfgA1, existingNames,
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot }, makeLogger())
+
+    const mutableA1 = cfgA1 as unknown as { skills: { paths: string[] } }
+    const pathA1 = mutableA1.skills.paths[0]!
+    expect(existsSync(pathA1)).toBe(true)
+
+    const pluginAv2 = fakePlugin("plugin-a@mkt-A", pluginADir, "2.0.0")
+    const cfgA2 = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills([pluginAv2], cfgA2, existingNames,
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot }, makeLogger())
+
+    // mkt-A/plugin-a v1 pruned; mkt-B/plugin-z v1 completely untouched
+    expect(existsSync(pathA1)).toBe(false)
+    expect(existsSync(pathZ)).toBe(true)
+  })
+
+  test("GC failure skips+warns but does not throw", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    writePluginSkills(pluginDir, ["shared-name"])
+    const cacheRoot = path.join(tmp.dir, "cache")
+    const existingNames = new Set(["shared-name"])
+
+    // First injection creates the stale v1.0.0 cache entry
+    const pluginV1 = fakePlugin("myplugin@acme", pluginDir, "1.0.0")
+    const cfg1 = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills([pluginV1], cfg1, existingNames,
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot }, makeLogger())
+
+    const mutable1 = cfg1 as unknown as { skills: { paths: string[] } }
+    const v1Dir = mutable1.skills.paths[0]!
+    expect(existsSync(v1Dir)).toBe(true)
+
+    // Make the stale dir unremovable by replacing it with a file of the same name
+    // (fs.rm with recursive:true on a file succeeds; instead, chmod 000 it on Unix)
+    // Simplest cross-platform simulation: remove the dir and put a file in its parent
+    // with the same name so rm on it will have a different result.
+    // Use a real approach: make the version-segment path read-only on the parent.
+    const { mkdirSync: mkSync, chmodSync } = require("node:fs")
+    const pluginCacheDir = require("node:path").dirname(v1Dir) // acme/myplugin
+    chmodSync(pluginCacheDir, 0o555) // read+execute only → can't remove children
+
+    let caughtThrow = false
+    const logger2 = makeLogger()
+    const pluginV2 = fakePlugin("myplugin@acme", pluginDir, "2.0.0")
+    const cfg2 = asConfig({ skills: { paths: [], urls: [] } })
+    try {
+      await injectSkills([pluginV2], cfg2, existingNames,
+        { home: tmp.dir, projectDir: tmp.dir, cacheRoot }, logger2)
+    } catch {
+      caughtThrow = true
+    } finally {
+      // Restore permissions so cleanup succeeds
+      chmodSync(pluginCacheDir, 0o755)
+    }
+
+    expect(caughtThrow).toBe(false) // must not throw
+    expect(logger2.warnings.some((w) => w.includes("prune"))).toBe(true)
+  })
+})
+
+// ── sanitizeCacheSegment — adversarial inputs ─────────────────────────────────
+
+import { sanitizeCacheSegment as _sanitize } from "../src/skill-inject.js"
+
+describe("sanitizeCacheSegment — adversarial inputs", () => {
+  test("replaces forward slash with underscore", () => {
+    expect(_sanitize("a/b")).toBe("a_b")
+  })
+
+  test("replaces backslash with underscore", () => {
+    expect(_sanitize("a\\b")).toBe("a_b")
+  })
+
+  test("replaces standalone .. with __", () => {
+    expect(_sanitize("..")).toBe("__")
+  })
+
+  test("replaces .. embedded in a segment (slashes also replaced)", () => {
+    // "foo../bar": '/' → '_' = "foo.._bar"; '..' → '__' = "foo___bar"
+    expect(_sanitize("foo../bar")).toBe("foo___bar")
+  })
+
+  test("strips leading dot", () => {
+    expect(_sanitize(".hidden")).toBe("_hidden")
+  })
+
+  test("all unsafe chars are gone from a mixed-separator traversal input", () => {
+    const result = _sanitize("../..\\evil")
+    expect(result).not.toContain("/")
+    expect(result).not.toContain("\\")
+    expect(result).not.toContain("..")
+  })
+
+  test("absolute path start is neutralized — no remaining slashes", () => {
+    const result = _sanitize("/absolute/path")
+    expect(result).not.toContain("/")
+  })
+
+  test("normal segment passes through unchanged", () => {
+    expect(_sanitize("my-plugin")).toBe("my-plugin")
+    expect(_sanitize("1.2.3")).toBe("1.2.3")
+    expect(_sanitize("acme")).toBe("acme")
   })
 })
 

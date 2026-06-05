@@ -11,6 +11,29 @@ import { collectExistingSkillNames } from "./skill-scan.js"
 import { checkVersion, fetchOpencodeVersion } from "./version.js"
 
 /**
+ * Parse an environment-variable value as a boolean, matching the set of truthy
+ * strings that Effect's `Config.boolean` accepts (used by OpenCode's `RuntimeFlags`):
+ * `1`, `true`, `yes`, `on` → `true`; everything else including `undefined` → `false`.
+ * Comparison is case-insensitive.
+ *
+ * This ensures the bridge's skip-decision mirrors OpenCode's own flag evaluation —
+ * a mismatch would cause the bridge to scan dirs that OpenCode skips (or vice versa),
+ * producing spurious collision-renames.
+ */
+export function parseBooleanEnv(value: string | undefined): boolean {
+  if (value === undefined) return false
+  switch (value.toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true
+    default:
+      return false
+  }
+}
+
+/**
  * The OpenCode plugin factory. Bridge options arrive as the tuple's second element
  * (`["opencode-claude-bridge", { ...options }]`) and are captured in the `config` hook's
  * closure — the hook signature carries only the config object (verified against the
@@ -20,6 +43,12 @@ import { checkVersion, fetchOpencodeVersion } from "./version.js"
  */
 export const server: Plugin = async (_input, options) => {
   const { config: bridge, warnings } = parseBridgeConfig(options)
+
+  // `diagnosticsFired` is set to true by the config hook when any warning fires.
+  // The chat.message hook reads it to decide whether to show the one-time toast.
+  // Lives in the factory closure so both hooks share the same flag.
+  let diagnosticsFired = false
+  let toastShown = false
 
   return {
     config: async (cfg) => {
@@ -52,10 +81,10 @@ export const server: Plugin = async (_input, options) => {
           projectDir: _input.directory,
           skillsPaths: (cfg as unknown as { skills?: { paths?: string[] } }).skills?.paths,
           // Mirror OpenCode's RuntimeFlags so the bridge scans the same dirs OpenCode will.
-          disableExternalSkills: process.env["OPENCODE_DISABLE_EXTERNAL_SKILLS"] === "true",
+          disableExternalSkills: parseBooleanEnv(process.env["OPENCODE_DISABLE_EXTERNAL_SKILLS"]),
           disableClaudeCodeSkills:
-            process.env["OPENCODE_DISABLE_CLAUDE_CODE"] === "true" ||
-            process.env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] === "true",
+            parseBooleanEnv(process.env["OPENCODE_DISABLE_CLAUDE_CODE"]) ||
+            parseBooleanEnv(process.env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"]),
         })
         const skillSummary = await injectSkills(selected, cfg, existingSkillNames, {
           home,
@@ -88,6 +117,28 @@ export const server: Plugin = async (_input, options) => {
         logger.warn(`unexpected error during config injection (${detail}); injected nothing this run`, {
           fatalInStrict: false,
         })
+      } finally {
+        // Record whether the config hook produced any warnings. Checked by chat.message
+        // so the toast fires on the user's first interaction rather than at config time
+        // (the TUI's event subscription is not yet guaranteed at config-hook execution).
+        if (logger.hadWarnings()) diagnosticsFired = true
+      }
+    },
+
+    "chat.message": async () => {
+      // Show a one-time toast on the first chat message if any warnings were emitted
+      // during the config hook. The toast is best-effort — a failure must never throw.
+      if (!diagnosticsFired || toastShown) return
+      toastShown = true
+      try {
+        await _input.client.tui.showToast({
+          body: {
+            variant: "warning",
+            message: "opencode-claude-bridge encountered issues — run with --print-logs for details",
+          },
+        })
+      } catch {
+        // Best-effort only: if the TUI is not available (e.g. non-TUI mode) ignore silently.
       }
     },
   }

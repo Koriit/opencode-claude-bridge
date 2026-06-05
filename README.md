@@ -214,15 +214,27 @@ capture plugin output into its own log file — the bridge's messages only reach
 OpenCode's log file if they are written through OpenCode's own `Log.*` API, which
 the bridge does not use.
 
-To see bridge diagnostics, run `opencode` (or `opencode serve`) with `--print-logs`:
+**In-TUI nudge.** If the bridge emitted any warnings during startup, a single
+`warning` toast appears on your first message in the TUI:
+
+> opencode-claude-bridge encountered issues — run with --print-logs for details
+
+The toast is deferred to your first chat interaction (rather than shown at startup)
+because the TUI's event subscription is not yet guaranteed at the moment the config
+hook runs (the hook fires on the first instance request, concurrent with the TUI
+subscribing to the server's event stream). The toast fires at most once per session.
+
+**Full diagnostic detail.** To see every `[opencode-claude-bridge]` log line,
+run `opencode` (or `opencode serve`) with `--print-logs`:
 
 ```bash
 opencode --print-logs
 ```
 
-In normal TUI mode (without `--print-logs`), stderr is not displayed and bridge
-warnings are invisible. If something appears to be missing or misbehaving, rerun
-with `--print-logs` to surface any skip/warn messages.
+In non-TUI mode (`opencode serve`) or when running without `--print-logs`, all
+bridge output goes to stderr only — the toast nudge is not shown in non-TUI mode.
+If something appears to be missing or misbehaving, rerun with `--print-logs` to
+surface the full set of skip/warn messages.
 
 The end-to-end suite launches a real `opencode serve` with the plugin loaded and a fake `claude`
 CLI on `PATH`, then asserts behavior against the live HTTP API. It also acts as the

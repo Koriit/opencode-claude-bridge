@@ -31,6 +31,7 @@ function makeLogger(): Logger & { warnings: string[]; infos: string[] } {
     infos,
     info(msg: string) { infos.push(msg) },
     warn(msg: string) { warnings.push(msg) },
+    hadWarnings() { return warnings.length > 0 },
   }
 }
 
