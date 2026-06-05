@@ -536,7 +536,8 @@ describe("bridge e2e — skill collision (intra-bridge)", () => {
   })
 
   test("injection summary shows rename count", () => {
-    expect(server!.logHas("renamed 1 (collision)")).toBe(true)
+    // Skill collision: both the skill path and the skill-derived command are renamed → 2 renames.
+    expect(server!.logHas("renamed 2 (collision)")).toBe(true)
   })
 })
 
