@@ -51,9 +51,6 @@ export const server: Plugin = async (_input, options) => {
 
   return {
     config: async (cfg) => {
-      // TEMPORARY DIAGNOSTIC — remove before next release
-      process.stderr.write(`[ocb-debug] process.argv=${JSON.stringify(process.argv)}\n`)
-      process.stderr.write(`[ocb-debug] has --print-logs: ${process.argv.includes("--print-logs")}\n`)
       const logger = createLogger(bridge.strict)
       try {
         // Replay parse-time validation warnings (strict-promotable).

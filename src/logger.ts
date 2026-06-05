@@ -25,29 +25,62 @@ export interface Logger {
 }
 
 /**
- * Internal output logger. Writes to process.stderr in OpenCode's structured
- * log format: `LEVEL  ISO-timestamp +Xms service=opencode-claude-bridge <message>`
- *
- * Gated on --print-logs to match OpenCode's own log-visibility behaviour.
+ * Minimal duck-type for the OpenCode core logger service we resolve at runtime.
+ * `@opencode-ai/core` is private/unpublished; we access it via dynamic import
+ * against the Bun module registry that the host worker already populated.
  */
-const log = (() => {
-  const enabled = process.argv.includes("--print-logs")
-  let last = Date.now()
-
-  function write(level: "INFO" | "WARN", msg: string): void {
-    if (!enabled) return
-    const now = Date.now()
-    const ts = new Date(now).toISOString().split(".")[0]
-    const diff = now - last
-    last = now
-    process.stderr.write(`${level.padEnd(5)} ${ts} +${diff}ms service=opencode-claude-bridge ${msg}\n`)
+interface CoreLog {
+  create(tags?: Record<string, unknown>): {
+    info(msg: string): void
+    warn(msg: string): void
   }
+}
 
-  return {
-    info: (msg: string) => write("INFO", msg),
-    warn: (msg: string) => write("WARN", msg),
+/**
+ * Resolve the core log module at runtime by hitting Bun's module registry.
+ * The Bun Worker that hosts plugins already executed
+ *   `import * as Log from "@opencode-ai/core/util/log"`
+ * and called `Log.init({ print: ... })`, so the registry holds a fully
+ * configured instance. A dynamic import of the same specifier returns it.
+ *
+ * Falls back to a plain stderr writer if the import fails (tests, non-OpenCode
+ * environments) — in that case output is always emitted so tests can capture it.
+ */
+async function resolveCoreLog(): Promise<CoreLog | null> {
+  try {
+    // @opencode-ai/core is a private package bundled into the OpenCode binary.
+    // The dynamic import resolves against Bun's module registry at runtime —
+    // the host worker already loaded and initialized it.
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore — not in node_modules; resolved from the Bun bundle at runtime
+    return await import("@opencode-ai/core/util/log") as CoreLog
+  } catch {
+    return null
   }
-})()
+}
+
+// Kick off resolution immediately so it's ready before the first log call.
+const coreLogPromise = resolveCoreLog()
+
+/**
+ * Fallback writer used when the core log module is unavailable.
+ * Always writes to stderr — correct for test environments.
+ */
+function fallbackWrite(level: "INFO" | "WARN", msg: string): void {
+  const ts = new Date().toISOString().split(".")[0]
+  process.stderr.write(`${level.padEnd(5)} ${ts} service=opencode-claude-bridge ${msg}\n`)
+}
+
+async function emit(level: "INFO" | "WARN", msg: string): Promise<void> {
+  const core = await coreLogPromise
+  if (core) {
+    const svc = core.create({ service: "opencode-claude-bridge" })
+    if (level === "INFO") svc.info(msg)
+    else svc.warn(msg)
+  } else {
+    fallbackWrite(level, msg)
+  }
+}
 
 /**
  * Create a logger bound to the resolved `strict` flag. The hook itself is
@@ -58,13 +91,13 @@ export function createLogger(strict: boolean): Logger {
   let warningCount = 0
   return {
     info(msg) {
-      log.info(msg)
+      void emit("INFO", msg)
     },
     warn(msg, opts) {
       const fatalInStrict = opts?.fatalInStrict ?? true
       warningCount++
       if (strict && fatalInStrict) throw new BridgeError(msg)
-      log.warn(msg)
+      void emit("WARN", msg)
     },
     hadWarnings() {
       return warningCount > 0
