@@ -144,6 +144,11 @@ export const server: Plugin = async (_input, options) => {
       }
     },
 
+    "experimental.chat.system.transform": async (input, output) => {
+      if (input.sessionID)
+        output.system.push(`Session ID: ${input.sessionID}`)
+    },
+
     "chat.message": async () => {
       // Show a one-time toast on the first chat message if any warnings were emitted
       // during the config hook. The toast is best-effort — a failure must never throw.
