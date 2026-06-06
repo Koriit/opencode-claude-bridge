@@ -187,6 +187,12 @@ export function pluginDataDir(home: string, pluginId: string): string {
 /**
  * Resolve `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` in a string.
  * `$ARGUMENTS` and `$1..$n` pass through untouched (OpenCode supports them).
+ *
+ * `${CLAUDE_SESSION_ID}` cannot be resolved to a concrete value here: the config
+ * hook produces one config object shared by all sessions in the same directory,
+ * so baking in a single session's ID would leak it into every other session. It
+ * is instead replaced with a literal hint that tells the model to read the ID
+ * from the `Session ID:` line injected per-session into the system prompt.
  */
 export function resolvePluginVars(text: string, installPath: string, dataDir: string): string {
   return text

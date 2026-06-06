@@ -156,13 +156,15 @@ The bridge resolves the following variables in injected content before OpenCode 
 `<sanitized-id>` is the plugin id with all characters outside `[a-zA-Z0-9_-]` replaced by `-`
 (e.g. `my-plugin@acme` → `my-plugin-acme`).
 
-> **`${CLAUDE_SESSION_ID}` limitation.** OpenCode's config is immutable by the time the bridge
-> runs, so the actual session ID cannot be injected into content at config time. Instead,
-> `${CLAUDE_SESSION_ID}` is substituted with the literal string `<use Session ID from context>`,
-> which instructs the model to read the session ID from the system prompt. As a workaround, the
-> bridge injects a `Session ID: <id>` line into every message's system prompt via the
-> `experimental.chat.system.transform` hook, making the current ID available to the model
-> whenever it needs it.
+> **`${CLAUDE_SESSION_ID}` limitation.** The bridge runs in the `config` hook, which produces a
+> single config object **shared by all sessions in the same directory**. Baking a concrete session
+> ID into skill/command/agent content there would leak one session's ID into every other session
+> that reuses the config. Because the content is per-directory, not per-session, the actual ID
+> cannot be substituted at config time. Instead, `${CLAUDE_SESSION_ID}` is replaced with the literal
+> string `<use Session ID from context>`, which instructs the model to read the session ID from the
+> system prompt. As a workaround, the bridge injects a `Session ID: <id>` line into every message's
+> system prompt via the `experimental.chat.system.transform` hook (which *is* per-session), making
+> the current ID available to the model whenever it needs it.
 
 ### MCP servers (opt-in)
 

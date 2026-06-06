@@ -156,6 +156,10 @@ export const server: Plugin = async (_input, options) => {
     },
 
     "experimental.chat.system.transform": async (input, output) => {
+      // Per-session hook: inject the concrete session ID into the system prompt.
+      // This is the counterpart to the `${CLAUDE_SESSION_ID}` → "<use Session ID
+      // from context>" substitution — content lives in the per-directory config
+      // and can't carry a session-specific ID, so the model reads it from here.
       if (input.sessionID)
         output.system.push(`Session ID: ${input.sessionID}`)
     },
