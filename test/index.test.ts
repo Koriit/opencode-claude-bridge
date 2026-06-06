@@ -38,6 +38,11 @@ function fakeShell(exitCode: number, stdout: string): PluginInput["$"] {
   return (() => build()) as unknown as PluginInput["$"]
 }
 
+/** Fake client whose app.log is a no-op (the bridge logs through it). */
+function fakeClient(): PluginInput["client"] {
+  return { app: { log: async () => ({ data: true }) } } as unknown as PluginInput["client"]
+}
+
 // ── Malformed plugin entry ────────────────────────────────────────────────────
 
 describe("opencode-claude-bridge hook — malformed plugin entry handling", () => {
@@ -56,6 +61,7 @@ describe("opencode-claude-bridge hook — malformed plugin entry handling", () =
     const input = {
       $: fakeShell(0, JSON.stringify([{ id: "bad" }])), // malformed entry → warns + skips
       directory: tmpDir,
+      client: fakeClient(),
     } as unknown as PluginInput
 
     const mod = await server(input, undefined)
@@ -68,6 +74,7 @@ describe("opencode-claude-bridge hook — malformed plugin entry handling", () =
     const input = {
       $: fakeShell(0, JSON.stringify([{ id: "bad" }])), // malformed → warns → throws in strict
       directory: tmpDir,
+      client: fakeClient(),
     } as unknown as PluginInput
 
     const mod = await server(input, { strict: true })

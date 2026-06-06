@@ -1,4 +1,7 @@
-import { readFileSync } from "node:fs"
+import type { PluginInput } from "@opencode-ai/plugin"
+
+/** The subset of the OpenCode client the logger needs: `app.log`. */
+type LogClient = PluginInput["client"]
 
 /** Thrown when a soft warning is promoted to a hard error under `strict` mode. */
 export class BridgeError extends Error {
@@ -27,73 +30,38 @@ export interface Logger {
 }
 
 /**
- * Detect whether --print-logs was passed to the parent OpenCode process.
+ * Create a logger that writes through OpenCode's `client.app.log` endpoint —
+ * the proper plugin logging channel. Entries land in the server logs under the
+ * `opencode-claude-bridge` service and honor OpenCode's own log configuration.
  *
- * process.argv is stripped in Bun Workers (only ["bun", "<worker_script>"] is
- * present), so we cannot check it directly. However, Workers run in the same
- * OS process as the host, so /proc/self/cmdline contains the real command line.
- * Falls back to false on non-Linux platforms or if the file is unreadable.
+ * Logging is fire-and-forget: the POST is not awaited and any failure is
+ * swallowed so logging can never disrupt the config hook.
+ *
+ * The hook itself is responsible for catching {@link BridgeError} in non-strict
+ * paths; in strict mode the error propagates so OpenCode surfaces a hard failure.
  */
-function detectPrintLogs(): boolean {
-  try {
-    const args = readFileSync("/proc/self/cmdline").toString().split("\0")
-    return args.includes("--print-logs")
-  } catch {
-    return false
-  }
-}
-
-const printLogs = detectPrintLogs()
-
-/**
- * Try to import @opencode-ai/core/util/log from the host Bun Worker's module
- * registry. If available, its already-initialized logger routes output to
- * stderr (with --print-logs) or the log file (default) without any extra
- * argv inspection. Falls back to null when the module is unavailable.
- */
-async function resolveCoreLog() {
-  try {
-    return await import("@opencode-ai/core/util/log")
-  } catch {
-    return null
-  }
-}
-
-const coreLogPromise = resolveCoreLog()
-
-function fallbackWrite(level: "INFO" | "WARN", msg: string): void {
-  if (!printLogs) return
-  const ts = new Date().toISOString().split(".")[0]
-  process.stderr.write(`${level.padEnd(5)} ${ts} service=opencode-claude-bridge ${msg}\n`)
-}
-
-async function emit(level: "INFO" | "WARN", msg: string): Promise<void> {
-  const core = await coreLogPromise
-  if (core) {
-    const svc = core.create({ service: "opencode-claude-bridge" })
-    if (level === "INFO") svc.info(msg)
-    else svc.warn(msg)
-  } else {
-    fallbackWrite(level, msg)
-  }
-}
-
-/**
- * Create a logger bound to the resolved `strict` flag. The hook itself is
- * responsible for catching {@link BridgeError} in non-strict paths; in strict
- * mode the error propagates so OpenCode surfaces a hard failure.
- */
-export function createLogger(strict: boolean): Logger {
+export function createLogger(client: LogClient, strict: boolean): Logger {
   let warningCount = 0
+
+  const emit = (level: "info" | "warn", message: string): void => {
+    try {
+      void client.app
+        .log({ body: { service: "opencode-claude-bridge", level, message } })
+        .catch(() => {})
+    } catch {
+      // Best-effort: never let a logging failure escape into the hook.
+    }
+  }
+
   return {
     info(msg) {
-      void emit("INFO", msg)
+      emit("info", msg)
     },
     warn(msg, opts) {
       const fatalInStrict = opts?.fatalInStrict ?? true
       warningCount++
       if (strict && fatalInStrict) throw new BridgeError(msg)
-      void emit("WARN", msg)
+      emit("warn", msg)
     },
     hadWarnings() {
       return warningCount > 0

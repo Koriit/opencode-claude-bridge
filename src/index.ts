@@ -45,7 +45,7 @@ export const server: Plugin = async (_input, options) => {
 
   return {
     config: async (cfg) => {
-      const logger = createLogger(bridge.strict)
+      const logger = createLogger(_input.client, bridge.strict)
       try {
         // Replay parse-time validation warnings (strict-promotable).
         for (const w of warnings) logger.warn(w)

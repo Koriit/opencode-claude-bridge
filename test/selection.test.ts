@@ -178,7 +178,10 @@ describe("listClaudePlugins", () => {
   })
 
   test("a missing CLI becomes a hard error under a strict logger", async () => {
-    const strict = createLogger(true)
+    const strict = createLogger(
+      { app: { log: async () => ({ data: true }) } } as unknown as PluginInput["client"],
+      true,
+    )
     await expect(
       listClaudePlugins(fakeShell(new Error("command not found")), strict),
     ).rejects.toThrow()

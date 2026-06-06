@@ -255,26 +255,27 @@ bun run test:coverage    # unit tests with line/function coverage report
 
 ### Bridge diagnostics
 
-Bridge log lines are prefixed `[opencode-claude-bridge]` and are written to the
-`opencode` process's **stderr**. OpenCode does not rebind `console.*` and does not
-capture plugin output into its own log file — the bridge's messages only reach
-OpenCode's log file if they are written through OpenCode's own `Log.*` API, which
-the bridge does not use.
+Bridge log lines are written through OpenCode's own logging endpoint
+(`client.app.log`) under the `opencode-claude-bridge` service, so they land in
+OpenCode's **server logs** alongside everything else and honor OpenCode's log
+configuration. Logging is fire-and-forget — a logging failure can never disrupt
+injection.
 
 The bridge does not surface in-TUI notifications. Many of its warnings are not
 actionable by you (they reflect issues in the *plugin author's* skill/command/agent
 definitions), so a per-session toast would be noise. Warnings and skips are logged
 instead — if a component you expect is missing or misbehaving, check the logs.
 
-**Full diagnostic detail.** To see every `[opencode-claude-bridge]` log line,
-run `opencode` (or `opencode serve`) with `--print-logs`:
+**Full diagnostic detail.** To stream the logs (including the bridge's
+`service=opencode-claude-bridge` lines) to stderr, run `opencode` (or
+`opencode serve`) with `--print-logs`:
 
 ```bash
 opencode --print-logs
 ```
 
-Without `--print-logs`, bridge output is suppressed. Rerun with the flag to surface
-the full set of skip/warn messages whenever something looks off.
+Without `--print-logs` the entries still go to OpenCode's server log file; the
+flag just mirrors them to stderr. Check there whenever something looks off.
 
 The end-to-end suite launches a real `opencode serve` with the plugin loaded and a fake `claude`
 CLI on `PATH`, then asserts behavior against the live HTTP API. It also acts as the
