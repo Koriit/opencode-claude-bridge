@@ -151,7 +151,7 @@ The bridge resolves the following variables in injected content before OpenCode 
 | `${CLAUDE_PLUGIN_ROOT}` | Plugin versioned install path — `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>` | Commands, agents, skills (body + SKILL.md), MCP, LSP |
 | `${CLAUDE_PLUGIN_DATA}` | Plugin persistent data dir — `~/.claude/plugins/data/<sanitized-id>` | Commands, agents, skills (body + SKILL.md), MCP, LSP |
 | `${CLAUDE_SKILL_DIR}` | Skill source directory (dirname of `SKILL.md`) | Plugin skills only (body + SKILL.md) |
-| `${CLAUDE_SESSION_ID}` | Current OpenCode session ID | Commands, agents (patched on first message); skill SKILL.md path-based files are not patched — the model resolves from the system-prompt `Session ID:` line the bridge injects |
+| `${CLAUDE_SESSION_ID}` | Current OpenCode session ID | Native/local skills (SKILL.md patched on first message once session ID is available); the model resolves it in other contexts from the `Session ID:` line the bridge injects into the system prompt |
 
 `<sanitized-id>` is the plugin id with all characters outside `[a-zA-Z0-9_-]` replaced by `-`
 (e.g. `my-plugin@acme` → `my-plugin-acme`).

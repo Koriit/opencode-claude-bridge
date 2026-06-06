@@ -49,17 +49,10 @@ export const server: Plugin = async (_input, options) => {
   let diagnosticsFired = false
   let toastShown = false
 
-  // Stored so the transform hook can patch ${CLAUDE_SESSION_ID} on first message.
-  // The session ID is not available at config-hook time; it first appears in the
-  // experimental.chat.system.transform input. Patching cfg in-place covers all
-  // command templates and agent prompts (including skill-derived commands).
-  let cfgRef: unknown
-  let sessionIdPatched = false
   let nativeSkillPatches: NativeSkillPatch[] = []
 
   return {
     config: async (cfg) => {
-      cfgRef = cfg
       const logger = createLogger(bridge.strict)
       try {
         // Replay parse-time validation warnings (strict-promotable).
@@ -166,29 +159,7 @@ export const server: Plugin = async (_input, options) => {
     "experimental.chat.system.transform": async (input, output) => {
       if (!input.sessionID) return
       output.system.push(`Session ID: ${input.sessionID}`)
-      if (sessionIdPatched) return
-      sessionIdPatched = true
-      // Patch ${CLAUDE_SESSION_ID} in command templates and agent prompts.
-      // Skill-as-skill (path-based) SKILL.md files are not patched here; the model
-      // resolves the variable from the "Session ID: ..." system-prompt line above.
-      const mutable = cfgRef as {
-        command?: Record<string, { template?: string }>
-        agent?: Record<string, { prompt?: string } | undefined>
-      }
-      const id = input.sessionID
-      if (mutable?.command) {
-        for (const entry of Object.values(mutable.command)) {
-          if (entry?.template?.includes("${CLAUDE_SESSION_ID}"))
-            entry.template = entry.template.replaceAll("${CLAUDE_SESSION_ID}", id)
-        }
-      }
-      if (mutable?.agent) {
-        for (const entry of Object.values(mutable.agent)) {
-          if (entry?.prompt?.includes("${CLAUDE_SESSION_ID}"))
-            entry.prompt = entry.prompt.replaceAll("${CLAUDE_SESSION_ID}", id)
-        }
-      }
-      await applySessionIdToNativePatches(nativeSkillPatches, id)
+      await applySessionIdToNativePatches(nativeSkillPatches, input.sessionID)
     },
 
     "chat.message": async () => {
