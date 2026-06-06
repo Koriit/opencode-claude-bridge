@@ -20,6 +20,11 @@ injects the components live on each launch.
   Claude's plugin state. If it is missing, the bridge logs a warning and injects nothing (OpenCode
   still starts normally).
 
+> **Windows support is best-effort only.** The bridge is developed and tested on Linux/macOS.
+> Core features (commands, agents, skills) should work, but edge cases — particularly around
+> path handling and `${CLAUDE_PLUGIN_ROOT}` / `${CLAUDE_PLUGIN_DATA}` resolution — have not
+> been validated on Windows.
+
 ### Supported OpenCode version
 
 ```text
