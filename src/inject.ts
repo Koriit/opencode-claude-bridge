@@ -192,6 +192,7 @@ export function resolvePluginVars(text: string, installPath: string, dataDir: st
   return text
     .replaceAll("${CLAUDE_PLUGIN_ROOT}", installPath)
     .replaceAll("${CLAUDE_PLUGIN_DATA}", dataDir)
+    .replaceAll("${CLAUDE_SESSION_ID}", "<use Session ID from context>")
 }
 
 /**

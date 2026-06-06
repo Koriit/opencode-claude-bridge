@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { injectSkills, patchSkillName, patchNativeSkillVars, applySessionIdToNativePatches, type SkillInjectionSummary } from "../src/skill-inject.js"
+import { injectSkills, patchSkillName, patchNativeSkillVars, type SkillInjectionSummary } from "../src/skill-inject.js"
 import { extractSkillName } from "../src/skill-scan.js"
 import { NameAllocator } from "../src/naming.js"
 import type { Logger } from "../src/logger.js"
@@ -1397,7 +1397,7 @@ describe("patchNativeSkillVars — variable substitution for pre-existing cfg.sk
     const cacheRoot = path.join(tmp.dir, "cache")
     const cfg = asConfigWithPaths([skillDir])
 
-    const patches = await patchNativeSkillVars(cfg, tmp.dir, cacheRoot, makeLogger())
+    await patchNativeSkillVars(cfg, tmp.dir, cacheRoot, makeLogger())
 
     const mutable = cfg as unknown as { skills: { paths: string[] } }
     expect(mutable.skills.paths[0]).not.toBe(skillDir)
@@ -1405,27 +1405,24 @@ describe("patchNativeSkillVars — variable substitution for pre-existing cfg.sk
     const content = readFileSync(path.join(mutable.skills.paths[0]!, "SKILL.md"), "utf8")
     expect(content).toContain(`Run ${skillDir}/setup.sh`)
     expect(content).not.toContain("${CLAUDE_SKILL_DIR}")
-    expect(patches).toHaveLength(0) // no session ID, no deferred patch
   })
 
-  test("${CLAUDE_SESSION_ID} is left as placeholder and returned as a patch record", async () => {
+  test("${CLAUDE_SESSION_ID} is resolved to the static hint string immediately", async () => {
     const skillDir = makeNativeSkill("session-skill", "Session: ${CLAUDE_SESSION_ID}")
     const cacheRoot = path.join(tmp.dir, "cache")
     const cfg = asConfigWithPaths([skillDir])
 
-    const patches = await patchNativeSkillVars(cfg, tmp.dir, cacheRoot, makeLogger())
+    await patchNativeSkillVars(cfg, tmp.dir, cacheRoot, makeLogger())
 
     const mutable = cfg as unknown as { skills: { paths: string[] } }
     const cachedPath = mutable.skills.paths[0]!
     expect(cachedPath.startsWith(cacheRoot)).toBe(true)
     const content = readFileSync(path.join(cachedPath, "SKILL.md"), "utf8")
-    expect(content).toContain("${CLAUDE_SESSION_ID}") // still a placeholder
-    expect(patches).toHaveLength(1)
-    expect(patches[0]!.cachedPath).toBe(cachedPath)
-    expect(patches[0]!.needsSessionId).toBe(true)
+    expect(content).toContain("Session: <use Session ID from context>")
+    expect(content).not.toContain("${CLAUDE_SESSION_ID}")
   })
 
-  test("both vars in one skill: SKILL_DIR resolved immediately, SESSION_ID deferred", async () => {
+  test("both vars in one skill: SKILL_DIR and SESSION_ID both resolved immediately", async () => {
     const skillDir = makeNativeSkill(
       "both-skill",
       "Dir: ${CLAUDE_SKILL_DIR} | Session: ${CLAUDE_SESSION_ID}",
@@ -1433,28 +1430,13 @@ describe("patchNativeSkillVars — variable substitution for pre-existing cfg.sk
     const cacheRoot = path.join(tmp.dir, "cache")
     const cfg = asConfigWithPaths([skillDir])
 
-    const patches = await patchNativeSkillVars(cfg, tmp.dir, cacheRoot, makeLogger())
+    await patchNativeSkillVars(cfg, tmp.dir, cacheRoot, makeLogger())
 
     const mutable = cfg as unknown as { skills: { paths: string[] } }
     const content = readFileSync(path.join(mutable.skills.paths[0]!, "SKILL.md"), "utf8")
     expect(content).toContain(`Dir: ${skillDir}`)
+    expect(content).toContain("Session: <use Session ID from context>")
     expect(content).not.toContain("${CLAUDE_SKILL_DIR}")
-    expect(content).toContain("${CLAUDE_SESSION_ID}")
-    expect(patches[0]!.needsSessionId).toBe(true)
-  })
-
-  test("applySessionIdToNativePatches resolves the deferred placeholder", async () => {
-    const skillDir = makeNativeSkill("session-skill", "ID: ${CLAUDE_SESSION_ID}")
-    const cacheRoot = path.join(tmp.dir, "cache")
-    const cfg = asConfigWithPaths([skillDir])
-
-    const patches = await patchNativeSkillVars(cfg, tmp.dir, cacheRoot, makeLogger())
-    await applySessionIdToNativePatches(patches, "test-session-123")
-
-    const mutable = cfg as unknown as { skills: { paths: string[] } }
-    const content = readFileSync(path.join(mutable.skills.paths[0]!, "SKILL.md"), "utf8")
-    expect(content).toContain("ID: test-session-123")
     expect(content).not.toContain("${CLAUDE_SESSION_ID}")
-    expect(patches[0]!.needsSessionId).toBe(false)
   })
 })

@@ -407,7 +407,8 @@ async function injectPluginSkills(
       const hasVars =
         content.includes("${CLAUDE_PLUGIN_ROOT}") ||
         content.includes("${CLAUDE_PLUGIN_DATA}") ||
-        content.includes("${CLAUDE_SKILL_DIR}")
+        content.includes("${CLAUDE_SKILL_DIR}") ||
+        content.includes("${CLAUDE_SESSION_ID}")
       const needsCopy = renamed || hasVars
 
       if (!needsCopy) {
@@ -566,44 +567,34 @@ export async function injectSkills(
 
 // ── Native-skill variable patching ───────────────────────────────────────────
 
-/** Returned for each native skill that still needs ${CLAUDE_SESSION_ID} resolved. */
-export interface NativeSkillPatch {
-  cachedPath: string
-  needsSessionId: boolean
-}
-
 /**
  * Scan the paths already in `cfg.skills.paths` (loaded by OpenCode before the
- * bridge's config hook ran) and patch SKILL.md files that reference
- * `${CLAUDE_SKILL_DIR}` or `${CLAUDE_SESSION_ID}`.
+ * bridge's config hook ran) and resolve variables in SKILL.md files that
+ * reference `${CLAUDE_SKILL_DIR}` or `${CLAUDE_SESSION_ID}`.
+ *
+ * `${CLAUDE_SESSION_ID}` is a static substitution that expands to the literal
+ * string `<use Session ID from context>`, instructing the model to read the
+ * session ID from the system-prompt line the bridge injects each turn.
  *
  * For each matching skill:
  * - Copies the skill directory to the bridge cache (keyed by sanitized path).
- * - Resolves `${CLAUDE_SKILL_DIR}` immediately (the directory is known).
- * - Leaves `${CLAUDE_SESSION_ID}` as a literal placeholder — the session ID is
- *   not yet available at config-hook time.
+ * - Resolves all variables and writes the patched SKILL.md.
  * - Replaces the entry in `cfg.skills.paths` with the cached copy's path.
- *
- * Returns patch records for skills that still need `${CLAUDE_SESSION_ID}`
- * resolved; callers should call {@link applySessionIdToNativePatches} once the
- * session ID becomes available (typically the first chat.system.transform call).
  */
 export async function patchNativeSkillVars(
   cfg: Config,
   home: string,
   cacheRoot: string | undefined,
   logger: Logger,
-): Promise<NativeSkillPatch[]> {
+): Promise<void> {
   const mutableCfg = cfg as unknown as InjectableConfig
   const skills = mutableCfg.skills
-  if (!skills || typeof skills === "boolean") return []
+  if (!skills || typeof skills === "boolean") return
   const paths = (skills as SkillsConfig).paths
-  if (!Array.isArray(paths) || paths.length === 0) return []
+  if (!Array.isArray(paths) || paths.length === 0) return
 
   const resolvedCacheRoot =
     cacheRoot ?? path.join(home, ".cache", "opencode-claude-bridge", "skills")
-
-  const patches: NativeSkillPatch[] = []
 
   for (let i = 0; i < paths.length; i++) {
     const skillDir = paths[i]!
@@ -616,16 +607,15 @@ export async function patchNativeSkillVars(
       continue
     }
 
-    const hasSkillDir = content.includes("${CLAUDE_SKILL_DIR}")
-    const hasSessionId = content.includes("${CLAUDE_SESSION_ID}")
-    if (!hasSkillDir && !hasSessionId) continue
+    const hasVars =
+      content.includes("${CLAUDE_SKILL_DIR}") ||
+      content.includes("${CLAUDE_SESSION_ID}")
+    if (!hasVars) continue
 
-    // Deterministic cache key: sanitize the full absolute path.
     const cacheKey = sanitizeCacheSegment(skillDir)
     const cachedSkillDir = path.join(resolvedCacheRoot, "native", cacheKey)
     const cachedSkillMd = path.join(cachedSkillDir, "SKILL.md")
 
-    // Copy the directory when stale (source newer than cache).
     const stale = await isCacheStale(skillMdPath, cachedSkillMd)
     if (stale) {
       try {
@@ -639,9 +629,9 @@ export async function patchNativeSkillVars(
       }
     }
 
-    // Always write a fresh base SKILL.md: SKILL_DIR resolved, SESSION_ID as placeholder.
-    let processedContent = content
-    if (hasSkillDir) processedContent = processedContent.replaceAll("${CLAUDE_SKILL_DIR}", skillDir)
+    const processedContent = content
+      .replaceAll("${CLAUDE_SKILL_DIR}", skillDir)
+      .replaceAll("${CLAUDE_SESSION_ID}", "<use Session ID from context>")
     try {
       await fs.writeFile(cachedSkillMd, processedContent, "utf8")
     } catch (err) {
@@ -653,35 +643,5 @@ export async function patchNativeSkillVars(
     }
 
     paths[i] = cachedSkillDir
-    if (hasSessionId) patches.push({ cachedPath: cachedSkillDir, needsSessionId: true })
-  }
-
-  return patches
-}
-
-/**
- * Patch `${CLAUDE_SESSION_ID}` in cached SKILL.md files produced by
- * {@link patchNativeSkillVars}. Safe to call multiple times; already-patched
- * entries are skipped (`needsSessionId` is cleared after the first successful
- * write).
- */
-export async function applySessionIdToNativePatches(
-  patches: NativeSkillPatch[],
-  sessionId: string,
-): Promise<void> {
-  for (const patch of patches) {
-    if (!patch.needsSessionId) continue
-    const skillMdPath = path.join(patch.cachedPath, "SKILL.md")
-    try {
-      const content = await fs.readFile(skillMdPath, "utf8")
-      await fs.writeFile(
-        skillMdPath,
-        content.replaceAll("${CLAUDE_SESSION_ID}", sessionId),
-        "utf8",
-      )
-      patch.needsSessionId = false
-    } catch {
-      // Best-effort: leave placeholder in place if the file can't be updated.
-    }
   }
 }

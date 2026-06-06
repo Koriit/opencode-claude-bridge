@@ -2,7 +2,7 @@ import os from "node:os"
 import type { Plugin, PluginModule } from "@opencode-ai/plugin"
 import { parseBridgeConfig } from "./config.js"
 import { injectCommandsAndAgents } from "./inject.js"
-import { injectSkills, patchNativeSkillVars, applySessionIdToNativePatches, type NativeSkillPatch } from "./skill-inject.js"
+import { injectSkills, patchNativeSkillVars } from "./skill-inject.js"
 import { injectMcp } from "./mcp-inject.js"
 import { injectLsp } from "./lsp-inject.js"
 import { createLogger } from "./logger.js"
@@ -49,7 +49,6 @@ export const server: Plugin = async (_input, options) => {
   let diagnosticsFired = false
   let toastShown = false
 
-  let nativeSkillPatches: NativeSkillPatch[] = []
 
   return {
     config: async (cfg) => {
@@ -76,7 +75,7 @@ export const server: Plugin = async (_input, options) => {
         // Patch ${CLAUDE_SKILL_DIR} and ${CLAUDE_SESSION_ID} in native/local skills
         // that OpenCode already loaded into cfg.skills.paths before our hook ran.
         // Must run before injectSkills so only pre-bridge paths are processed.
-        nativeSkillPatches = await patchNativeSkillVars(
+        await patchNativeSkillVars(
           cfg,
           home,
           process.env["OPENCODE_CLAUDE_BRIDGE_CACHE_ROOT"],
@@ -157,9 +156,8 @@ export const server: Plugin = async (_input, options) => {
     },
 
     "experimental.chat.system.transform": async (input, output) => {
-      if (!input.sessionID) return
-      output.system.push(`Session ID: ${input.sessionID}`)
-      await applySessionIdToNativePatches(nativeSkillPatches, input.sessionID)
+      if (input.sessionID)
+        output.system.push(`Session ID: ${input.sessionID}`)
     },
 
     "chat.message": async () => {
