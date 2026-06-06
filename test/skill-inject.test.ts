@@ -1255,6 +1255,28 @@ describe("injectSkills — plugin variable resolution in asCommand path", () => 
     const expectedDataDir = path.join(tmp.dir, ".claude", "plugins", "data", "plug-mkt")
     expect(entry.template).toBe(`Store at ${expectedDataDir}/cache`)
   })
+
+  test("${CLAUDE_SKILL_DIR} in skill body is resolved to the skill's directory when injected as a command", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills")
+    mkdirSync(skillsDir, { recursive: true })
+    writeSkillWithBody(skillsDir, "dir-skill", "Run ${CLAUDE_SKILL_DIR}/setup.sh")
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    const commandAllocator = new NameAllocator(new Set<string>())
+    await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot: path.join(tmp.dir, "cache"), commandAllocator },
+      makeLogger(),
+    )
+
+    const mutable = cfg as unknown as { command?: Record<string, { template: string }> }
+    const entry = Object.values(mutable.command!)[0]!
+    const expectedSkillDir = path.join(skillsDir, "dir-skill")
+    expect(entry.template).toBe(`Run ${expectedSkillDir}/setup.sh`)
+  })
 })
 
 describe("injectSkills — plugin variable resolution in asSkill path", () => {
@@ -1308,5 +1330,33 @@ describe("injectSkills — plugin variable resolution in asSkill path", () => {
     const cachedContent = readFileSync(path.join(injectedPath, "SKILL.md"), "utf8")
     expect(cachedContent).toContain(`Load ${pluginDir}/data`)
     expect(cachedContent).not.toContain("${CLAUDE_PLUGIN_ROOT}")
+  })
+
+  test("SKILL.md with ${CLAUDE_SKILL_DIR} triggers a cache copy resolved to the skill's source dir", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillDir = path.join(pluginDir, "skills", "dir-skill")
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: dir-skill\ndescription: A skill.\n---\n\nRun ${CLAUDE_SKILL_DIR}/setup.sh\n",
+    )
+    const cacheRoot = path.join(tmp.dir, "cache")
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot },
+      makeLogger(),
+    )
+
+    const mutable = cfg as unknown as { skills: { paths: string[] } }
+    expect(mutable.skills.paths).toHaveLength(1)
+    const injectedPath = mutable.skills.paths[0]!
+    expect(injectedPath.startsWith(cacheRoot)).toBe(true)
+    const cachedContent = readFileSync(path.join(injectedPath, "SKILL.md"), "utf8")
+    expect(cachedContent).toContain(`Run ${skillDir}/setup.sh`)
+    expect(cachedContent).not.toContain("${CLAUDE_SKILL_DIR}")
   })
 })

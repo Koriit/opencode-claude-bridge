@@ -405,7 +405,9 @@ async function injectPluginSkills(
       const { name: allocatedName, renamed } = skillAllocator.claim(plugin.id, bareName)
 
       const hasVars =
-        content.includes("${CLAUDE_PLUGIN_ROOT}") || content.includes("${CLAUDE_PLUGIN_DATA}")
+        content.includes("${CLAUDE_PLUGIN_ROOT}") ||
+        content.includes("${CLAUDE_PLUGIN_DATA}") ||
+        content.includes("${CLAUDE_SKILL_DIR}")
       const needsCopy = renamed || hasVars
 
       if (!needsCopy) {
@@ -426,6 +428,7 @@ async function injectPluginSkills(
             let processedContent = content
             if (renamed) processedContent = patchSkillName(processedContent, allocatedName)
             if (hasVars) processedContent = resolvePluginVars(processedContent, plugin.installPath, dataDir)
+              .replaceAll("${CLAUDE_SKILL_DIR}", skillDir)
             await fs.writeFile(cachedSkillMd, processedContent, "utf8")
           } catch (err) {
             logger.warn(
@@ -447,8 +450,9 @@ async function injectPluginSkills(
       const modelRaw = fmData["model"]
       const model = typeof modelRaw === "string" && modelRaw.includes("/") ? modelRaw : undefined
       const resolvedBody = resolvePluginVars(body, plugin.installPath, dataDir)
+        .replaceAll("${CLAUDE_SKILL_DIR}", skillDir)
       const resolvedDescription = description !== undefined
-        ? resolvePluginVars(description, plugin.installPath, dataDir)
+        ? resolvePluginVars(description, plugin.installPath, dataDir).replaceAll("${CLAUDE_SKILL_DIR}", skillDir)
         : undefined
       const { renamed } = injectCommandEntry(
         bareName,
