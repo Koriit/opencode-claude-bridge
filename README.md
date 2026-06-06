@@ -261,15 +261,10 @@ capture plugin output into its own log file — the bridge's messages only reach
 OpenCode's log file if they are written through OpenCode's own `Log.*` API, which
 the bridge does not use.
 
-**In-TUI nudge.** If the bridge emitted any warnings during startup, a single
-`warning` toast appears on your first message in the TUI:
-
-> opencode-claude-bridge encountered issues — run with --print-logs for details
-
-The toast is deferred to your first chat interaction (rather than shown at startup)
-because the TUI's event subscription is not yet guaranteed at the moment the config
-hook runs (the hook fires on the first instance request, concurrent with the TUI
-subscribing to the server's event stream). The toast fires at most once per session.
+The bridge does not surface in-TUI notifications. Many of its warnings are not
+actionable by you (they reflect issues in the *plugin author's* skill/command/agent
+definitions), so a per-session toast would be noise. Warnings and skips are logged
+instead — if a component you expect is missing or misbehaving, check the logs.
 
 **Full diagnostic detail.** To see every `[opencode-claude-bridge]` log line,
 run `opencode` (or `opencode serve`) with `--print-logs`:
@@ -278,10 +273,8 @@ run `opencode` (or `opencode serve`) with `--print-logs`:
 opencode --print-logs
 ```
 
-In non-TUI mode (`opencode serve`) or when running without `--print-logs`, all
-bridge output goes to stderr only — the toast nudge is not shown in non-TUI mode.
-If something appears to be missing or misbehaving, rerun with `--print-logs` to
-surface the full set of skip/warn messages.
+Without `--print-logs`, bridge output is suppressed. Rerun with the flag to surface
+the full set of skip/warn messages whenever something looks off.
 
 The end-to-end suite launches a real `opencode serve` with the plugin loaded and a fake `claude`
 CLI on `PATH`, then asserts behavior against the live HTTP API. It also acts as the

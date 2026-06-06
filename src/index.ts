@@ -43,13 +43,6 @@ export function parseBooleanEnv(value: string | undefined): boolean {
 export const server: Plugin = async (_input, options) => {
   const { config: bridge, warnings } = parseBridgeConfig(options)
 
-  // `diagnosticsFired` is set to true by the config hook when any warning fires.
-  // The chat.message hook reads it to decide whether to show the one-time toast.
-  // Lives in the factory closure so both hooks share the same flag.
-  let diagnosticsFired = false
-  let toastShown = false
-
-
   return {
     config: async (cfg) => {
       const logger = createLogger(bridge.strict)
@@ -147,11 +140,6 @@ export const server: Plugin = async (_input, options) => {
         logger.warn(`unexpected error during config injection (${detail}); injected nothing this run`, {
           fatalInStrict: false,
         })
-      } finally {
-        // Record whether the config hook produced any warnings. Checked by chat.message
-        // so the toast fires on the user's first interaction rather than at config time
-        // (the TUI's event subscription is not yet guaranteed at config-hook execution).
-        if (logger.hadWarnings()) diagnosticsFired = true
       }
     },
 
@@ -162,23 +150,6 @@ export const server: Plugin = async (_input, options) => {
       // and can't carry a session-specific ID, so the model reads it from here.
       if (input.sessionID)
         output.system.push(`Session ID: ${input.sessionID}`)
-    },
-
-    "chat.message": async () => {
-      // Show a one-time toast on the first chat message if any warnings were emitted
-      // during the config hook. The toast is best-effort — a failure must never throw.
-      if (!diagnosticsFired || toastShown) return
-      toastShown = true
-      try {
-        await _input.client.tui.showToast({
-          body: {
-            variant: "warning",
-            message: "opencode-claude-bridge encountered issues — run with --print-logs for details",
-          },
-        })
-      } catch {
-        // Best-effort only: if the TUI is not available (e.g. non-TUI mode) ignore silently.
-      }
     },
   }
 }
