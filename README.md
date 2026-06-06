@@ -142,6 +142,20 @@ To override the cache location (e.g. in CI or test environments), set the
 > cannot detect collision against them at hook time (fetching URL skills would force the lazy Skill
 > service to load before our injected paths). A warning is logged when URLs are present.
 
+### Variable substitution
+
+The bridge resolves the following variables in injected content before OpenCode sees it.
+
+| Variable | Resolves to | Available in |
+|---|---|---|
+| `${CLAUDE_PLUGIN_ROOT}` | Plugin versioned install path — `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>` | Commands, agents, skills (body + SKILL.md), MCP, LSP |
+| `${CLAUDE_PLUGIN_DATA}` | Plugin persistent data dir — `~/.claude/plugins/data/<sanitized-id>` | Commands, agents, skills (body + SKILL.md), MCP, LSP |
+| `${CLAUDE_SKILL_DIR}` | Skill source directory (dirname of `SKILL.md`) | Plugin skills only (body + SKILL.md) |
+| `${CLAUDE_SESSION_ID}` | Current OpenCode session ID | Commands, agents (patched on first message); skill SKILL.md path-based files are not patched — the model resolves from the system-prompt `Session ID:` line the bridge injects |
+
+`<sanitized-id>` is the plugin id with all characters outside `[a-zA-Z0-9_-]` replaced by `-`
+(e.g. `my-plugin@acme` → `my-plugin-acme`).
+
 ### MCP servers (opt-in)
 
 When `allowMcp: true`, the bridge reads each enabled plugin's top-level `.mcp.json` and injects
@@ -149,7 +163,7 @@ the declared servers into OpenCode's flat `cfg.mcp` record. The mapping:
 
 - Claude `type:"http"` → OpenCode `{ type:"remote", url, headers?, oauth? }`
 - Claude stdio/command servers → OpenCode `{ type:"local", command:[cmd, ...args], environment? }`
-- `${CLAUDE_PLUGIN_ROOT}` is resolved to the plugin's `installPath` in all string fields.
+- All string fields support variable substitution (see above).
 - OAuth: the `clientId`, `callbackPort`, etc. field names are identical between Claude and OpenCode.
 
 **Name:** `<plugin>-<server>` (e.g. a plugin `slack@official` with server `slack` becomes
@@ -167,7 +181,7 @@ the declared servers into `cfg.lsp`. The mapping:
 - Claude `extensionToLanguage` keys (e.g. `{ ".rs": "rust" }`) → OpenCode `extensions` array
 - `env`, `initializationOptions` (falling back to `settings`) → `env`, `initialization`
   (only one is used; `initializationOptions` takes precedence — they do not merge)
-- `${CLAUDE_PLUGIN_ROOT}` is resolved in command, args, and env values.
+- All string fields (command, args, env) support variable substitution (see above).
 - Servers with no `.`-prefixed keys in `extensionToLanguage`, or with `transport: "socket"`,
   are skipped with a warning (OpenCode requires `extensions` for custom LSP servers and has
   no socket transport support).
