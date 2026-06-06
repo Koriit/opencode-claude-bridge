@@ -67,11 +67,11 @@ export const server: Plugin = async (_input, options) => {
         )
 
         // §6.1 commands, §6.2 agents — inline injection into the shared cfg.
-        const cmdAgentSummary = await injectCommandsAndAgents(selected, cfg, logger)
+        const home = os.homedir()
+        const cmdAgentSummary = await injectCommandsAndAgents(selected, cfg, home, logger)
         const { commandAllocator } = cmdAgentSummary
 
         // §6.3 skills — cfg.skills.paths injection (with bridge-cache copy on collision).
-        const home = os.homedir()
         const existingSkillNames = await collectExistingSkillNames({
           home,
           projectDir: _input.directory,

@@ -65,6 +65,7 @@ describe("mapClaudeLspServer — basic mapping", () => {
     const result = mapClaudeLspServer(
       { command: "rust-analyzer", args: [], extensionToLanguage: { ".rs": "rust" } },
       "/plugin",
+      "/tmp",
     )
     expect(result.ok).toBe(true)
     expect(okLsp(result).command).toEqual(["rust-analyzer"])
@@ -74,6 +75,7 @@ describe("mapClaudeLspServer — basic mapping", () => {
     const result = mapClaudeLspServer(
       { command: "typescript-language-server", args: ["--stdio"], extensionToLanguage: { ".ts": "typescript" } },
       "/plugin",
+      "/tmp",
     )
     expect(okLsp(result).command).toEqual(["typescript-language-server", "--stdio"])
   })
@@ -86,18 +88,19 @@ describe("mapClaudeLspServer — basic mapping", () => {
         extensionToLanguage: { ".py": "python", ".pyi": "python" },
       },
       "/plugin",
+      "/tmp",
     )
     expect(okLsp(result).extensions).toEqual([".py", ".pyi"])
   })
 
   test("no extensionToLanguage returns no-extensions reason", () => {
-    const result = mapClaudeLspServer({ command: "ls", args: [] }, "/plugin")
+    const result = mapClaudeLspServer({ command: "ls", args: [] }, "/plugin", "/tmp")
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toBe("no-extensions")
   })
 
   test("empty extensionToLanguage returns no-extensions reason", () => {
-    const result = mapClaudeLspServer({ command: "ls", extensionToLanguage: {} }, "/plugin")
+    const result = mapClaudeLspServer({ command: "ls", extensionToLanguage: {} }, "/plugin", "/tmp")
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toBe("no-extensions")
   })
@@ -106,6 +109,7 @@ describe("mapClaudeLspServer — basic mapping", () => {
     const result = mapClaudeLspServer(
       { command: "ls", extensionToLanguage: { ".x": "x" }, transport: "socket" },
       "/plugin",
+      "/tmp",
     )
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toBe("socket-transport")
@@ -119,6 +123,7 @@ describe("mapClaudeLspServer — basic mapping", () => {
         env: { ROOT: "${CLAUDE_PLUGIN_ROOT}/scripts", KEY: "val" },
       },
       "/myroot",
+      "/tmp",
     )
     expect(okLsp(result).env).toEqual({ ROOT: "/myroot/scripts", KEY: "val" })
   })
@@ -127,6 +132,7 @@ describe("mapClaudeLspServer — basic mapping", () => {
     const result = mapClaudeLspServer(
       { command: "server", extensionToLanguage: { ".x": "x" }, initializationOptions: { setting: true } },
       "/plugin",
+      "/tmp",
     )
     expect(okLsp(result).initialization).toEqual({ setting: true })
   })
@@ -135,6 +141,7 @@ describe("mapClaudeLspServer — basic mapping", () => {
     const result = mapClaudeLspServer(
       { command: "server", extensionToLanguage: { ".x": "x" }, settings: { key: "value" } },
       "/plugin",
+      "/tmp",
     )
     expect(okLsp(result).initialization).toEqual({ key: "value" })
   })
@@ -143,6 +150,7 @@ describe("mapClaudeLspServer — basic mapping", () => {
     const result = mapClaudeLspServer(
       { command: "server", extensionToLanguage: { ".x": "x" }, initializationOptions: { from: "init" }, settings: { from: "settings" } },
       "/plugin",
+      "/tmp",
     )
     expect(okLsp(result).initialization).toEqual({ from: "init" })
   })
@@ -151,18 +159,19 @@ describe("mapClaudeLspServer — basic mapping", () => {
     const result = mapClaudeLspServer(
       { command: "${CLAUDE_PLUGIN_ROOT}/bin/lsp", args: ["${CLAUDE_PLUGIN_ROOT}/config.json"], extensionToLanguage: { ".x": "x" } },
       "/abs/path",
+      "/tmp",
     )
     expect(okLsp(result).command).toEqual(["/abs/path/bin/lsp", "/abs/path/config.json"])
   })
 
   test("missing command returns missing-command reason", () => {
-    const result = mapClaudeLspServer({ args: ["--stdio"] }, "/plugin")
+    const result = mapClaudeLspServer({ args: ["--stdio"] }, "/plugin", "/tmp")
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toBe("missing-command")
   })
 
   test("non-string command returns missing-command reason", () => {
-    const result = mapClaudeLspServer({ command: 42 as unknown as string }, "/plugin")
+    const result = mapClaudeLspServer({ command: 42 as unknown as string }, "/plugin", "/tmp")
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toBe("missing-command")
   })

@@ -7,6 +7,8 @@ import {
   commandNameFromPath,
   agentNameFromPath,
   sanitizeAgentColor,
+  sanitizePluginId,
+  pluginDataDir,
   type InjectableConfig,
 } from "../src/inject.js"
 import type { Logger } from "../src/logger.js"
@@ -208,13 +210,47 @@ describe("sanitizeAgentColor", () => {
   })
 })
 
+// ── sanitizePluginId ─────────────────────────────────────────────────────────
+
+describe("sanitizePluginId", () => {
+  test("leaves already-clean id unchanged", () => {
+    expect(sanitizePluginId("my-plugin")).toBe("my-plugin")
+  })
+
+  test("replaces @ with -", () => {
+    expect(sanitizePluginId("formatter@my-marketplace")).toBe("formatter-my-marketplace")
+  })
+
+  test("replaces / with -", () => {
+    expect(sanitizePluginId("org/plugin")).toBe("org-plugin")
+  })
+
+  test("replaces multiple special chars with -", () => {
+    expect(sanitizePluginId("my.plugin@acme!")).toBe("my-plugin-acme-")
+  })
+
+  test("preserves alphanumeric, underscore, and hyphen", () => {
+    expect(sanitizePluginId("abc_123-XYZ")).toBe("abc_123-XYZ")
+  })
+})
+
+// ── pluginDataDir ─────────────────────────────────────────────────────────────
+
+describe("pluginDataDir", () => {
+  test("returns ~/.claude/plugins/data/<sanitized-id>", () => {
+    expect(pluginDataDir("/home/user", "my-plugin@acme")).toBe(
+      "/home/user/.claude/plugins/data/my-plugin-acme",
+    )
+  })
+})
+
 // ── injectCommandsAndAgents — no plugins ─────────────────────────────────────
 
 describe("injectCommandsAndAgents — empty plugin list", () => {
   test("returns zero summary when no plugins", async () => {
     const cfg = asConfig({})
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([], cfg, logger)
+    const summary = await injectCommandsAndAgents([], cfg, "/tmp", logger)
     expect(summary).toMatchObject({ commands: 0, agents: 0, renamed: 0 })
     expect(logger.warnings).toHaveLength(0)
   })
@@ -238,7 +274,7 @@ describe("injectCommandsAndAgents — command injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("myplugin@mkt", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("myplugin@mkt", dir)], asConfig(cfg), dir, logger)
 
     expect(summary.commands).toBe(1)
     expect(summary.agents).toBe(0)
@@ -254,7 +290,7 @@ describe("injectCommandsAndAgents — command injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    await injectCommandsAndAgents([fakePlugin("plug@mkt", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("plug@mkt", dir)], asConfig(cfg), dir, logger)
 
     expect(cfg.command?.["simple"]).toMatchObject({
       template: "Do something with $ARGUMENTS",
@@ -268,9 +304,43 @@ describe("injectCommandsAndAgents — command injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(cfg.command?.["load"]?.template).toBe(`Read from ${dir}/data`)
+  })
+
+  test("resolves ${CLAUDE_PLUGIN_DATA} in the template", async () => {
+    writeFile(dir, "commands/dataload.md", "---\ndescription: Load data\n---\nRead from ${CLAUDE_PLUGIN_DATA}/cache")
+
+    const cfg: InjectableConfig = {}
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
+
+    const expectedDataDir = pluginDataDir(dir, "p@m")
+    expect(cfg.command?.["dataload"]?.template).toBe(`Read from ${expectedDataDir}/cache`)
+  })
+
+  test("resolves ${CLAUDE_PLUGIN_DATA} in a frontmatter description field", async () => {
+    writeFile(dir, "commands/datacmd.md", `---\ndescription: From \${CLAUDE_PLUGIN_DATA}/docs\n---\ntemplate body`)
+
+    const cfg: InjectableConfig = {}
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
+
+    const expectedDataDir = pluginDataDir(dir, "p@m")
+    expect(cfg.command?.["datacmd"]?.description).toBe(`From ${expectedDataDir}/docs [p@m]`)
+  })
+
+  test("resolves both ${CLAUDE_PLUGIN_ROOT} and ${CLAUDE_PLUGIN_DATA} in one template", async () => {
+    writeFile(
+      dir,
+      "commands/both.md",
+      "---\n---\nroot=${CLAUDE_PLUGIN_ROOT} data=${CLAUDE_PLUGIN_DATA}",
+    )
+
+    const cfg: InjectableConfig = {}
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
+
+    const expectedDataDir = pluginDataDir(dir, "p@m")
+    expect(cfg.command?.["both"]?.template).toBe(`root=${dir} data=${expectedDataDir}`)
   })
 
   test("resolves ${CLAUDE_PLUGIN_ROOT} in a frontmatter description field", async () => {
@@ -278,7 +348,7 @@ describe("injectCommandsAndAgents — command injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(cfg.command?.["cmd"]?.description).toBe(`From ${dir}/docs [p@m]`)
     expect(cfg.command?.["cmd"]?.template).toBe("template body")
@@ -288,7 +358,7 @@ describe("injectCommandsAndAgents — command injection", () => {
     writeFile(dir, "commands/greet.md", "---\n---\nHello $ARGUMENTS and $1 $2")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.command?.["greet"]?.template).toBe("Hello $ARGUMENTS and $1 $2")
   })
@@ -298,7 +368,7 @@ describe("injectCommandsAndAgents — command injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(cfg.command?.["fileref"]?.template).toBe("Read @somefile.txt and do something")
     expect(logger.warnings.some((w) => w.includes("@file"))).toBe(true)
@@ -309,7 +379,7 @@ describe("injectCommandsAndAgents — command injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(logger.warnings.some((w) => w.includes("@file"))).toBe(true)
   })
@@ -319,7 +389,7 @@ describe("injectCommandsAndAgents — command injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(logger.warnings.some((w) => w.includes("@file"))).toBe(false)
   })
@@ -329,7 +399,7 @@ describe("injectCommandsAndAgents — command injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(cfg.command?.["shell"]?.template).toContain("!`git status`")
     expect(logger.warnings.some((w) => w.includes("shell expansion"))).toBe(true)
@@ -340,7 +410,7 @@ describe("injectCommandsAndAgents — command injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(summary.commands).toBe(0)
     expect(cfg.command?.["empty"]).toBeUndefined()
@@ -351,7 +421,7 @@ describe("injectCommandsAndAgents — command injection", () => {
     writeFile(dir, "commands/smart.md", "---\nmodel: anthropic/claude-opus-4-5\n---\nDo something")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.command?.["smart"]?.model).toBe("anthropic/claude-opus-4-5")
   })
@@ -360,7 +430,7 @@ describe("injectCommandsAndAgents — command injection", () => {
     writeFile(dir, "commands/legacy.md", "---\nmodel: claude-3\n---\nDo something")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.command?.["legacy"]?.model).toBeUndefined()
   })
@@ -369,7 +439,7 @@ describe("injectCommandsAndAgents — command injection", () => {
     writeFile(dir, "commands/tools/lint.md", "---\n---\nRun linter")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.command?.["tools/lint"]).toBeDefined()
     expect(cfg.command?.["tools/lint"]?.template).toBe("Run linter")
@@ -379,7 +449,7 @@ describe("injectCommandsAndAgents — command injection", () => {
     writeFile(dir, "commands/noagent.md", "---\ndescription: no agent\n---\nDo stuff")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(Object.prototype.hasOwnProperty.call(cfg.command?.["noagent"], "agent")).toBe(false)
   })
@@ -388,7 +458,7 @@ describe("injectCommandsAndAgents — command injection", () => {
     writeFile(dir, "commands/variantcmd.md", "---\nvariant: fast\n---\nDo variant thing")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.command?.["variantcmd"]?.variant).toBe("fast")
   })
@@ -416,7 +486,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("plug@mkt", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("plug@mkt", dir)], asConfig(cfg), dir, logger)
 
     expect(summary.agents).toBe(1)
     const agent = cfg.agent?.["reviewer"]
@@ -430,7 +500,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/helper.md", "---\ndescription: Helper\n---\nHelp the user.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     const agent = cfg.agent?.["helper"] as Record<string, unknown>
     expect(agent).toBeDefined()
@@ -441,7 +511,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/default.md", "---\ndescription: Default agent\n---\nYou help.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["default"]?.mode).toBe("subagent")
   })
@@ -450,7 +520,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/primary.md", "---\nmode: primary\ndescription: Primary agent\n---\nYou are primary.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["primary"]?.mode).toBe("primary")
   })
@@ -463,7 +533,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     )
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["tuned"]?.temperature).toBe(0.5)
     expect(cfg.agent?.["tuned"]?.top_p).toBe(0.9)
@@ -478,7 +548,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     // Directly exercise the inject function with a fabricated frontmatter object by
     // writing a file and then confirming Infinity can't sneak in via YAML (YAML produces null for .inf)
     writeFile(dir, "agents/finiteguard.md", "---\ndescription: FiniteGuard\ntemperature: 0.7\n---\nYou are finite.")
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
     expect(cfg.agent?.["finiteguard"]?.temperature).toBe(0.7)
   })
 
@@ -486,7 +556,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/stepped.md", "---\nsteps: 20\ndescription: Stepped\n---\nYou step.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["stepped"]?.steps).toBe(20)
   })
@@ -495,7 +565,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/legacy.md", "---\nmodel: claude-3\ndescription: Legacy\n---\nYou are legacy.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["legacy"]?.model).toBeUndefined()
   })
@@ -508,7 +578,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     )
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["smart"]?.model).toBe("anthropic/claude-opus-4-5")
   })
@@ -517,9 +587,19 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/pathed.md", "---\ndescription: Has path\n---\nLoad from ${CLAUDE_PLUGIN_ROOT}/data")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["pathed"]?.prompt).toBe(`Load from ${dir}/data`)
+  })
+
+  test("resolves ${CLAUDE_PLUGIN_DATA} in agent prompt", async () => {
+    writeFile(dir, "agents/datapathed.md", "---\ndescription: Has data path\n---\nStore at ${CLAUDE_PLUGIN_DATA}/cache")
+
+    const cfg: InjectableConfig = {}
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
+
+    const expectedDataDir = pluginDataDir(dir, "p@m")
+    expect(cfg.agent?.["datapathed"]?.prompt).toBe(`Store at ${expectedDataDir}/cache`)
   })
 
   test("ignores nested agent files (only agents/*.md, not agents/sub/*.md)", async () => {
@@ -527,7 +607,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/sub/nested.md", "---\ndescription: Nested\n---\nNested.")
 
     const cfg: InjectableConfig = {}
-    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(summary.agents).toBe(1)
     expect(cfg.agent?.["top"]).toBeDefined()
@@ -538,7 +618,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/help.md", "---\ndescription: Original desc\n---\nHelp content.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("myplugin@marketplace", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("myplugin@marketplace", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["help"]?.description).toBe("Original desc [myplugin@marketplace]")
   })
@@ -547,7 +627,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/nodesc.md", "---\nmode: subagent\n---\nContent here.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     // Bare component name is used for human readability when no description is provided.
     expect(cfg.agent?.["nodesc"]?.description).toBe("nodesc [p@m]")
@@ -557,7 +637,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/hidden.md", "---\ndescription: Hidden\nhidden: true\n---\nYou are hidden.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["hidden"]?.hidden).toBe(true)
   })
@@ -566,7 +646,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/colorful.md", "---\ndescription: Colorful\ncolor: primary\n---\nYou are colorful.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["colorful"]?.color).toBe("primary")
   })
@@ -575,7 +655,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/hexcolor.md", "---\ndescription: Hex\ncolor: '#ff5733'\n---\nYou are hex-colored.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["hexcolor"]?.color).toBe("#ff5733")
   })
@@ -586,7 +666,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    await injectCommandsAndAgents([fakePlugin("kio-plugins@mkt", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("kio-plugins@mkt", dir)], asConfig(cfg), dir, logger)
 
     expect(cfg.agent?.["magenta"]?.color).toBe("#ff00ff")
     expect(logger.warnings).toHaveLength(0)
@@ -597,7 +677,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     // Agent must still be injected.
     expect(cfg.agent?.["unknowncolor"]).toBeDefined()
@@ -611,7 +691,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
     writeFile(dir, "agents/variantagent.md", "---\ndescription: Variant\nvariant: fast\n---\nYou are fast.")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["variantagent"]?.variant).toBe("fast")
   })
@@ -621,7 +701,7 @@ describe("injectCommandsAndAgents — agent injection", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(summary.agents).toBe(0)
     expect(cfg.agent?.["emptybody"]).toBeUndefined()
@@ -646,7 +726,7 @@ describe("injectCommandsAndAgents — naming collision with built-ins", () => {
     writeFile(dir, "commands/init.md", "---\n---\nCustom init")
 
     const cfg: InjectableConfig = {}
-    const summary = await injectCommandsAndAgents([fakePlugin("mytool@acme", dir)], asConfig(cfg), makeLogger())
+    const summary = await injectCommandsAndAgents([fakePlugin("mytool@acme", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(summary.renamed).toBe(1)
     expect(cfg.command?.["init"]).toBeUndefined()
@@ -657,7 +737,7 @@ describe("injectCommandsAndAgents — naming collision with built-ins", () => {
     writeFile(dir, "commands/review.md", "---\n---\nCustom review")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("tool@mkt", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("tool@mkt", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.command?.["review"]).toBeUndefined()
     expect(cfg.command?.["tool-review"]).toBeDefined()
@@ -667,7 +747,7 @@ describe("injectCommandsAndAgents — naming collision with built-ins", () => {
     writeFile(dir, "agents/build.md", "---\ndescription: Custom build\n---\nCustom build agent")
 
     const cfg: InjectableConfig = {}
-    const summary = await injectCommandsAndAgents([fakePlugin("ci@mkt", dir)], asConfig(cfg), makeLogger())
+    const summary = await injectCommandsAndAgents([fakePlugin("ci@mkt", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(summary.renamed).toBe(1)
     expect(cfg.agent?.["build"]).toBeUndefined()
@@ -678,7 +758,7 @@ describe("injectCommandsAndAgents — naming collision with built-ins", () => {
     writeFile(dir, "agents/general.md", "---\ndescription: General\n---\nGeneral agent")
 
     const cfg: InjectableConfig = {}
-    await injectCommandsAndAgents([fakePlugin("assistant@hub", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("assistant@hub", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(cfg.agent?.["general"]).toBeUndefined()
     expect(cfg.agent?.["assistant-general"]).toBeDefined()
@@ -702,7 +782,7 @@ describe("injectCommandsAndAgents — naming collision with existing cfg items",
     const cfg: InjectableConfig = {
       command: { deploy: { template: "native deploy" } },
     }
-    const summary = await injectCommandsAndAgents([fakePlugin("myplug@acme", dir)], asConfig(cfg), makeLogger())
+    const summary = await injectCommandsAndAgents([fakePlugin("myplug@acme", dir)], asConfig(cfg), dir, makeLogger())
 
     expect(summary.renamed).toBe(1)
     // Native item is untouched.
@@ -717,7 +797,7 @@ describe("injectCommandsAndAgents — naming collision with existing cfg items",
     const cfg: InjectableConfig = {
       command: { deploy: { template: "native" } },
     }
-    await injectCommandsAndAgents([fakePlugin("plug@mkt", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("plug@mkt", dir)], asConfig(cfg), dir, makeLogger())
 
     // The original native entry is unchanged.
     expect(cfg.command?.["deploy"]?.template).toBe("native")
@@ -750,6 +830,7 @@ describe("injectCommandsAndAgents — intra-bridge collision (two plugins, same 
     const summary = await injectCommandsAndAgents(
       [fakePlugin("a@mkt", dir1), fakePlugin("b@mkt", dir2)],
       asConfig(cfg),
+      dir1,
       makeLogger(),
     )
 
@@ -767,6 +848,7 @@ describe("injectCommandsAndAgents — intra-bridge collision (two plugins, same 
     const summary = await injectCommandsAndAgents(
       [fakePlugin("alpha@m", dir1), fakePlugin("beta@m", dir2)],
       asConfig(cfg),
+      dir1,
       makeLogger(),
     )
 
@@ -791,7 +873,7 @@ describe("injectCommandsAndAgents — plugin with no commands/agents dirs", () =
   test("plugin with no commands/ or agents/ dir injects nothing and produces no warnings", async () => {
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("empty@m", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("empty@m", dir)], asConfig(cfg), dir, logger)
 
     expect(summary).toMatchObject({ commands: 0, agents: 0, renamed: 0 })
     expect(logger.warnings).toHaveLength(0)
@@ -814,7 +896,7 @@ describe("injectCommandsAndAgents — cfg.command/cfg.agent guard (undefined/nul
 
     const cfg: InjectableConfig = {}
     expect(cfg.command).toBeUndefined()
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
     expect(cfg.command).toBeDefined()
   })
 
@@ -823,7 +905,7 @@ describe("injectCommandsAndAgents — cfg.command/cfg.agent guard (undefined/nul
 
     const cfg: InjectableConfig = {}
     expect(cfg.agent).toBeUndefined()
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
     expect(cfg.agent).toBeDefined()
   })
 
@@ -831,7 +913,7 @@ describe("injectCommandsAndAgents — cfg.command/cfg.agent guard (undefined/nul
     writeFile(dir, "commands/cmd.md", "---\n---\nDo thing")
 
     const cfg = { command: null } as unknown as InjectableConfig
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
     expect(cfg.command).toBeDefined()
     expect(cfg.command?.["cmd"]).toBeDefined()
   })
@@ -840,7 +922,7 @@ describe("injectCommandsAndAgents — cfg.command/cfg.agent guard (undefined/nul
     writeFile(dir, "agents/ag.md", "---\ndescription: Ag\n---\nBe agent")
 
     const cfg = { agent: null } as unknown as InjectableConfig
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), makeLogger())
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
     expect(cfg.agent).toBeDefined()
     expect(cfg.agent?.["ag"]).toBeDefined()
   })
@@ -865,7 +947,7 @@ describe("injectCommandsAndAgents — malformed frontmatter (unclosed ---)", () 
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     // The component must be skipped — nothing injected.
     expect(summary.commands).toBe(0)
@@ -890,7 +972,7 @@ describe("injectCommandsAndAgents — malformed frontmatter (unclosed ---)", () 
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     // The component must be skipped — nothing injected.
     expect(summary.agents).toBe(0)
@@ -925,7 +1007,7 @@ describe("injectCommandsAndAgents — agent with bare body (no frontmatter)", ()
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(summary.agents).toBe(1)
     expect(cfg.agent?.["raw"]?.prompt).toBe("You are a raw agent.")
@@ -958,7 +1040,7 @@ describe("injectCommandsAndAgents — I/O error skip-and-warn branches", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(summary.commands).toBe(0)
     expect(logger.warnings.some((w) => w.includes("could not read"))).toBe(true)
@@ -971,7 +1053,7 @@ describe("injectCommandsAndAgents — I/O error skip-and-warn branches", () => {
 
     const cfg: InjectableConfig = {}
     const logger = makeLogger()
-    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), logger)
+    const summary = await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
 
     expect(summary.agents).toBe(0)
     expect(logger.warnings.some((w) => w.includes("could not read"))).toBe(true)

@@ -1196,3 +1196,117 @@ describe("injectSkills — frontmatter routing flags", () => {
     expect(Object.keys(mutable.command!).some((k) => k.includes("existing-cmd"))).toBe(true)
   })
 })
+
+// ── injectSkills — plugin variable resolution ─────────────────────────────────
+
+describe("injectSkills — plugin variable resolution in asCommand path", () => {
+  let tmp: { dir: string; cleanup: () => void }
+  beforeEach(() => { tmp = makeTempDir() })
+  afterEach(() => tmp.cleanup())
+
+  function writeSkillWithBody(skillsDir: string, skillName: string, body: string): void {
+    const skillDir = path.join(skillsDir, skillName)
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(
+      path.join(skillDir, "SKILL.md"),
+      `---\nname: ${skillName}\ndescription: A skill.\n---\n\n${body}\n`,
+    )
+  }
+
+  test("${CLAUDE_PLUGIN_ROOT} in skill body is resolved when injected as a command", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills")
+    mkdirSync(skillsDir, { recursive: true })
+    writeSkillWithBody(skillsDir, "root-skill", "Load from ${CLAUDE_PLUGIN_ROOT}/data")
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    const commandAllocator = new NameAllocator(new Set<string>())
+    await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot: path.join(tmp.dir, "cache"), commandAllocator },
+      makeLogger(),
+    )
+
+    const mutable = cfg as unknown as { command?: Record<string, { template: string }> }
+    const entry = Object.values(mutable.command!)[0]!
+    expect(entry.template).toBe(`Load from ${pluginDir}/data`)
+  })
+
+  test("${CLAUDE_PLUGIN_DATA} in skill body is resolved when injected as a command", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills")
+    mkdirSync(skillsDir, { recursive: true })
+    writeSkillWithBody(skillsDir, "data-skill", "Store at ${CLAUDE_PLUGIN_DATA}/cache")
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    const commandAllocator = new NameAllocator(new Set<string>())
+    await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot: path.join(tmp.dir, "cache"), commandAllocator },
+      makeLogger(),
+    )
+
+    const mutable = cfg as unknown as { command?: Record<string, { template: string }> }
+    const entry = Object.values(mutable.command!)[0]!
+    const expectedDataDir = path.join(tmp.dir, ".claude", "plugins", "data", "plug-mkt")
+    expect(entry.template).toBe(`Store at ${expectedDataDir}/cache`)
+  })
+})
+
+describe("injectSkills — plugin variable resolution in asSkill path", () => {
+  let tmp: { dir: string; cleanup: () => void }
+  beforeEach(() => { tmp = makeTempDir() })
+  afterEach(() => tmp.cleanup())
+
+  test("SKILL.md without vars is pushed directly (no cache copy)", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    writePluginSkills(pluginDir, ["plain-skill"])
+    const cacheRoot = path.join(tmp.dir, "cache")
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot },
+      makeLogger(),
+    )
+
+    const mutable = cfg as unknown as { skills: { paths: string[] } }
+    expect(mutable.skills.paths).toHaveLength(1)
+    expect(mutable.skills.paths[0]).toBe(path.join(pluginDir, "skills", "plain-skill"))
+    expect(existsSync(cacheRoot)).toBe(false)
+  })
+
+  test("SKILL.md with ${CLAUDE_PLUGIN_ROOT} triggers a cache copy with vars resolved", async () => {
+    const pluginDir = mkdtempSync(path.join(tmp.dir, "plug-"))
+    const skillsDir = path.join(pluginDir, "skills", "var-skill")
+    mkdirSync(skillsDir, { recursive: true })
+    writeFileSync(
+      path.join(skillsDir, "SKILL.md"),
+      "---\nname: var-skill\ndescription: A skill.\n---\n\nLoad ${CLAUDE_PLUGIN_ROOT}/data\n",
+    )
+    const cacheRoot = path.join(tmp.dir, "cache")
+
+    const cfg = asConfig({ skills: { paths: [], urls: [] } })
+    await injectSkills(
+      [fakePlugin("plug@mkt", pluginDir)],
+      cfg,
+      new Set<string>(),
+      { home: tmp.dir, projectDir: tmp.dir, cacheRoot },
+      makeLogger(),
+    )
+
+    const mutable = cfg as unknown as { skills: { paths: string[] } }
+    expect(mutable.skills.paths).toHaveLength(1)
+    const injectedPath = mutable.skills.paths[0]!
+    expect(injectedPath.startsWith(cacheRoot)).toBe(true)
+    const cachedContent = readFileSync(path.join(injectedPath, "SKILL.md"), "utf8")
+    expect(cachedContent).toContain(`Load ${pluginDir}/data`)
+    expect(cachedContent).not.toContain("${CLAUDE_PLUGIN_ROOT}")
+  })
+})

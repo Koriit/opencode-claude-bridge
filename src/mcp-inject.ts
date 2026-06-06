@@ -10,7 +10,7 @@
  * Mapping (Claude → OpenCode V1 flat shape):
  *   - `type:"http"` (remote) → `{ type:"remote", url, headers?, oauth? }`
  *   - stdio/command (no type, or `type:"stdio"`) → `{ type:"local", command:[cmd, ...args], environment? }`
- *   - `${CLAUDE_PLUGIN_ROOT}` resolved to `installPath` in all string fields
+ *   - `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` resolved in all string fields
  *
  * oauth: OpenCode V1 uses the same camelCase field names as Claude's `.mcp.json`
  * (`clientId`, `clientSecret`, `scope`, `callbackPort`, `redirectUri`). No rename
@@ -25,9 +25,11 @@
  */
 
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import type { Config } from "@opencode-ai/plugin"
 import { NameAllocator, splitPluginId } from "./naming.js"
+import { resolvePluginVars, pluginDataDir } from "./inject.js"
 import type { Logger } from "./logger.js"
 import type { ClaudePlugin } from "./types.js"
 
@@ -114,14 +116,7 @@ interface ClaudeMcpJson {
 // ── Resolution helpers ────────────────────────────────────────────────────────
 
 /**
- * Resolve `${CLAUDE_PLUGIN_ROOT}` in a string to the absolute `installPath`.
- */
-function resolvePluginRoot(text: string, installPath: string): string {
-  return text.replaceAll("${CLAUDE_PLUGIN_ROOT}", installPath)
-}
-
-/**
- * Resolve `${CLAUDE_PLUGIN_ROOT}` in all string values of a record.
+ * Resolve plugin variables in all string values of a record.
  *
  * Non-string values (e.g. a numeric header or env value from a loose JSON file)
  * are silently dropped rather than reaching `String.prototype.replaceAll` and
@@ -130,10 +125,11 @@ function resolvePluginRoot(text: string, installPath: string): string {
 function resolveRecordValues(
   record: Record<string, unknown>,
   installPath: string,
+  dataDir: string,
 ): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(record)) {
-    if (typeof v === "string") out[k] = resolvePluginRoot(v, installPath)
+    if (typeof v === "string") out[k] = resolvePluginVars(v, installPath, dataDir)
     // Non-string values are dropped — they cannot be path-resolved and are
     // not valid in the target OpenCode string-record fields (headers, env).
   }
@@ -147,7 +143,7 @@ function resolveRecordValues(
  *
  * - `type:"http"` → `{ type:"remote", url, headers?, oauth? }`
  * - everything else (stdio, absent) → `{ type:"local", command:[cmd,...args], environment? }`
- * - `${CLAUDE_PLUGIN_ROOT}` resolved in all string fields
+ * - `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` resolved in all string fields
  * - oauth fields passed through with same camelCase names (OpenCode V1 matches Claude exactly)
  *
  * Returns `null` if the entry is malformed and should be skipped.
@@ -155,16 +151,17 @@ function resolveRecordValues(
 export function mapClaudeMcpServer(
   server: ClaudeMcpServer,
   installPath: string,
+  dataDir: string,
 ): McpEntry | null {
   if (server.type === "http") {
     // Remote entry
     if (!server.url || typeof server.url !== "string") return null
-    const url = resolvePluginRoot(server.url, installPath)
+    const url = resolvePluginVars(server.url, installPath, dataDir)
 
     const entry: McpRemoteEntry = { type: "remote", url }
 
     if (server.headers && typeof server.headers === "object") {
-      entry.headers = resolveRecordValues(server.headers, installPath)
+      entry.headers = resolveRecordValues(server.headers, installPath, dataDir)
     }
 
     if (server.oauth !== undefined) {
@@ -197,9 +194,9 @@ export function mapClaudeMcpServer(
 
   // Local / stdio entry
   if (!server.command || typeof server.command !== "string") return null
-  const cmd = resolvePluginRoot(server.command, installPath)
+  const cmd = resolvePluginVars(server.command, installPath, dataDir)
   const args = Array.isArray(server.args)
-    ? server.args.map((a) => (typeof a === "string" ? resolvePluginRoot(a, installPath) : String(a)))
+    ? server.args.map((a) => (typeof a === "string" ? resolvePluginVars(a, installPath, dataDir) : String(a)))
     : []
 
   const entry: McpLocalEntry = { type: "local", command: [cmd, ...args] }
@@ -208,6 +205,7 @@ export function mapClaudeMcpServer(
     entry.environment = resolveRecordValues(
       server.env as Record<string, unknown>,
       installPath,
+      dataDir,
     )
   }
 
@@ -278,6 +276,8 @@ async function injectPluginMcp(
     return
   }
 
+  const dataDir = pluginDataDir(os.homedir(), plugin.id)
+
   // pluginPart is loop-invariant — hoist outside the per-server loop.
   const pluginPart = splitPluginId(plugin.id).plugin
 
@@ -289,7 +289,7 @@ async function injectPluginMcp(
       continue
     }
 
-    const mapped = mapClaudeMcpServer(serverDef as ClaudeMcpServer, plugin.installPath)
+    const mapped = mapClaudeMcpServer(serverDef as ClaudeMcpServer, plugin.installPath, dataDir)
     if (mapped === null) {
       logger.warn(
         `MCP server "${serverName}" in plugin "${plugin.id}" is missing required fields (url for http, command for local); skipping`,

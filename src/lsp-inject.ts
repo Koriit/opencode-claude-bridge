@@ -25,7 +25,7 @@
  *   - `extensionToLanguage` keys → `extensions` (array of file-extension strings)
  *   - `env` → `env`
  *   - `initializationOptions` or `settings` → `initialization`
- *   - `${CLAUDE_PLUGIN_ROOT}` resolved to `installPath` in command/args/env values
+ *   - `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` resolved in command/args/env values
  *
  * SOURCE GAP NOTE: No real installed Claude plugin with LSP servers was available on
  * this machine (the rust-analyzer-lsp@claude-plugins-official plugin has only README/LICENSE,
@@ -44,9 +44,11 @@
  */
 
 import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import type { Config } from "@opencode-ai/plugin"
 import { NameAllocator, splitPluginId } from "./naming.js"
+import { resolvePluginVars, pluginDataDir } from "./inject.js"
 import type { Logger } from "./logger.js"
 import type { ClaudePlugin } from "./types.js"
 
@@ -110,14 +112,7 @@ interface ClaudeLspServer {
 // ── Resolution helpers ────────────────────────────────────────────────────────
 
 /**
- * Resolve `${CLAUDE_PLUGIN_ROOT}` in a string to the absolute `installPath`.
- */
-function resolvePluginRoot(text: string, installPath: string): string {
-  return text.replaceAll("${CLAUDE_PLUGIN_ROOT}", installPath)
-}
-
-/**
- * Resolve `${CLAUDE_PLUGIN_ROOT}` in all string values of a record.
+ * Resolve plugin variables in all string values of a record.
  *
  * Non-string values (e.g. a numeric env value from a loose JSON file) are
  * silently dropped rather than reaching `String.prototype.replaceAll` and
@@ -126,10 +121,11 @@ function resolvePluginRoot(text: string, installPath: string): string {
 function resolveRecordValues(
   record: Record<string, unknown>,
   installPath: string,
+  dataDir: string,
 ): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(record)) {
-    if (typeof v === "string") out[k] = resolvePluginRoot(v, installPath)
+    if (typeof v === "string") out[k] = resolvePluginVars(v, installPath, dataDir)
     // Non-string values are dropped — not valid in the target string-record fields (env).
   }
   return out
@@ -147,9 +143,9 @@ export type MapLspResult =
  *
  * - `command` (string) + `args` (array) → `command` (string array)
  * - `extensionToLanguage` keys → `extensions` (file extension strings, required)
- * - `env` → `env` (with `${CLAUDE_PLUGIN_ROOT}` resolved)
+ * - `env` → `env` (with plugin vars resolved)
  * - `initializationOptions` or `settings` → `initialization` (best-effort)
- * - `${CLAUDE_PLUGIN_ROOT}` resolved in command, args, env values
+ * - `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` resolved in command, args, env values
  * - `workspaceFolder` is not mapped (no equivalent in OpenCode V1 LSP entry shape)
  *
  * Returns a discriminated result so callers emit precise per-reason warnings. The
@@ -162,6 +158,7 @@ export type MapLspResult =
 export function mapClaudeLspServer(
   server: ClaudeLspServer,
   installPath: string,
+  dataDir: string,
 ): MapLspResult {
   if (!server.command || typeof server.command !== "string") {
     return { ok: false, reason: "missing-command" }
@@ -172,10 +169,10 @@ export function mapClaudeLspServer(
     return { ok: false, reason: "socket-transport" }
   }
 
-  const cmd = resolvePluginRoot(server.command, installPath)
+  const cmd = resolvePluginVars(server.command, installPath, dataDir)
   const args = Array.isArray(server.args)
     ? server.args.map((a) =>
-        typeof a === "string" ? resolvePluginRoot(a, installPath) : String(a),
+        typeof a === "string" ? resolvePluginVars(a, installPath, dataDir) : String(a),
       )
     : []
 
@@ -195,7 +192,7 @@ export function mapClaudeLspServer(
   }
 
   if (server.env && typeof server.env === "object") {
-    entry.env = resolveRecordValues(server.env as Record<string, unknown>, installPath)
+    entry.env = resolveRecordValues(server.env as Record<string, unknown>, installPath, dataDir)
   }
 
   // initializationOptions takes precedence over settings (both are best-effort).
@@ -267,6 +264,7 @@ async function injectPluginLsp(
   const servers = await readLspJson(plugin.installPath, plugin.id, logger)
   if (servers === null) return
 
+  const dataDir = pluginDataDir(os.homedir(), plugin.id)
   const pluginPart = splitPluginId(plugin.id).plugin
 
   for (const [serverName, serverDef] of Object.entries(servers)) {
@@ -277,7 +275,7 @@ async function injectPluginLsp(
       continue
     }
 
-    const result = mapClaudeLspServer(serverDef, plugin.installPath)
+    const result = mapClaudeLspServer(serverDef, plugin.installPath, dataDir)
     if (!result.ok) {
       // Precise per-reason warning — the discriminated result prevents misclassification
       // if new rejection reasons are added to mapClaudeLspServer later.

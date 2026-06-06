@@ -169,11 +169,29 @@ export function agentNameFromPath(installPath: string, filePath: string): string
 // ── Template processing ────────────────────────────────────────────────────────
 
 /**
- * Resolve `${CLAUDE_PLUGIN_ROOT}` in a string to the absolute `installPath`.
+ * Sanitize a plugin id for use as a filesystem path segment by replacing every
+ * character that is not `[a-zA-Z0-9_-]` with `-`.
+ */
+export function sanitizePluginId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, "-")
+}
+
+/**
+ * Return the persistent data directory for a plugin under the user's home directory.
+ * Path: `<home>/.claude/plugins/data/<sanitized-id>/`
+ */
+export function pluginDataDir(home: string, pluginId: string): string {
+  return path.join(home, ".claude", "plugins", "data", sanitizePluginId(pluginId))
+}
+
+/**
+ * Resolve `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` in a string.
  * `$ARGUMENTS` and `$1..$n` pass through untouched (OpenCode supports them).
  */
-function resolvePluginRoot(text: string, installPath: string): string {
-  return text.replaceAll("${CLAUDE_PLUGIN_ROOT}", installPath)
+export function resolvePluginVars(text: string, installPath: string, dataDir: string): string {
+  return text
+    .replaceAll("${CLAUDE_PLUGIN_ROOT}", installPath)
+    .replaceAll("${CLAUDE_PLUGIN_DATA}", dataDir)
 }
 
 /**
@@ -417,8 +435,8 @@ export function sanitizeAgentColor(value: string): string | null {
  * to the description. Returns the allocated name and whether it was renamed.
  *
  * The `entry.template` must already be fully resolved by the caller (e.g. via
- * `resolvePluginRoot` for commands from the plugin's commands/ dir, or verbatim for
- * skill-derived commands whose body does not use `${CLAUDE_PLUGIN_ROOT}`).
+ * `resolvePluginVars` for commands from the plugin's commands/ dir, or verbatim for
+ * skill-derived commands whose body does not use plugin variables).
  */
 export function injectCommandEntry(
   bareName: string,
@@ -457,6 +475,7 @@ async function injectPluginCommands(
   cfg: InjectableConfig,
   allocator: NameAllocator,
   summary: InjectionSummary,
+  home: string,
   logger: Logger,
 ): Promise<void> {
   const commandsDir = path.join(plugin.installPath, "commands")
@@ -468,6 +487,8 @@ async function injectPluginCommands(
   if (cfg.command === undefined || cfg.command === null || typeof cfg.command !== "object") {
     cfg.command = {}
   }
+
+  const dataDir = pluginDataDir(home, plugin.id)
 
   for (const filePath of files) {
     let content: string
@@ -496,7 +517,7 @@ async function injectPluginCommands(
       const body = content.trim()
       if (!body) continue
       const { name, renamed } = allocator.claim(plugin.id, bareName)
-      const template = resolvePluginRoot(body, plugin.installPath)
+      const template = resolvePluginVars(body, plugin.installPath, dataDir)
       warnUnsupportedPlaceholders(template, name, plugin.id, logger)
       const entry: CommandEntry = {
         template,
@@ -521,10 +542,10 @@ async function injectPluginCommands(
 
     const rawDescription = typeof data["description"] === "string" ? data["description"] : undefined
     const tracedDescription = rawDescription
-      ? `${resolvePluginRoot(rawDescription, plugin.installPath)} [${plugin.id}]`
+      ? `${resolvePluginVars(rawDescription, plugin.installPath, dataDir)} [${plugin.id}]`
       : `${bareName} [${plugin.id}]`
 
-    const template = resolvePluginRoot(body, plugin.installPath)
+    const template = resolvePluginVars(body, plugin.installPath, dataDir)
     warnUnsupportedPlaceholders(template, name, plugin.id, logger)
 
     const entry: CommandEntry = {
@@ -560,6 +581,7 @@ async function injectPluginAgents(
   cfg: InjectableConfig,
   allocator: NameAllocator,
   summary: InjectionSummary,
+  home: string,
   logger: Logger,
 ): Promise<void> {
   const agentsDir = path.join(plugin.installPath, "agents")
@@ -571,6 +593,8 @@ async function injectPluginAgents(
   if (cfg.agent === undefined || cfg.agent === null || typeof cfg.agent !== "object") {
     cfg.agent = {}
   }
+
+  const dataDir = pluginDataDir(home, plugin.id)
 
   for (const filePath of files) {
     // Agents are flat: agents/*.md only. Ignore any nested files (Claude spec).
@@ -603,7 +627,7 @@ async function injectPluginAgents(
       const body = content.trim()
       if (!body) continue
       const { name, renamed } = allocator.claim(plugin.id, bareName)
-      const prompt = resolvePluginRoot(body, plugin.installPath)
+      const prompt = resolvePluginVars(body, plugin.installPath, dataDir)
       const entry: AgentEntry = {
         description: `${bareName} [${plugin.id}]`,
         mode: "subagent",
@@ -630,10 +654,10 @@ async function injectPluginAgents(
 
     const rawDescription = typeof data["description"] === "string" ? data["description"] : undefined
     const tracedDescription = rawDescription
-      ? `${resolvePluginRoot(rawDescription, plugin.installPath)} [${plugin.id}]`
+      ? `${resolvePluginVars(rawDescription, plugin.installPath, dataDir)} [${plugin.id}]`
       : `${bareName} [${plugin.id}]`
 
-    const prompt = resolvePluginRoot(body, plugin.installPath)
+    const prompt = resolvePluginVars(body, plugin.installPath, dataDir)
 
     const entry: AgentEntry = {
       description: tracedDescription,
@@ -705,6 +729,7 @@ async function injectPluginAgents(
 export async function injectCommandsAndAgents(
   plugins: ClaudePlugin[],
   cfg: Config,
+  home: string,
   logger: Logger,
 ): Promise<InjectionResult> {
   const mutableCfg = cfg as unknown as InjectableConfig
@@ -728,8 +753,8 @@ export async function injectCommandsAndAgents(
   const agentAlloc = new NameAllocator(existingAgents)
 
   for (const plugin of plugins) {
-    await injectPluginCommands(plugin, mutableCfg, commandAlloc, summary, logger)
-    await injectPluginAgents(plugin, mutableCfg, agentAlloc, summary, logger)
+    await injectPluginCommands(plugin, mutableCfg, commandAlloc, summary, home, logger)
+    await injectPluginAgents(plugin, mutableCfg, agentAlloc, summary, home, logger)
   }
 
   return { ...summary, commandAllocator: commandAlloc }

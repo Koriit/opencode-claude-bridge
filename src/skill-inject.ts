@@ -30,7 +30,7 @@ import type { Config } from "@opencode-ai/plugin"
 import { extractSkillName } from "./skill-scan.js"
 import { NameAllocator, splitPluginId } from "./naming.js"
 import { parseFrontmatter, FRONTMATTER_PARSE_ERROR } from "./frontmatter.js"
-import { injectCommandEntry } from "./inject.js"
+import { injectCommandEntry, resolvePluginVars, pluginDataDir } from "./inject.js"
 import type { Logger } from "./logger.js"
 import type { ClaudePlugin } from "./types.js"
 
@@ -335,12 +335,15 @@ async function injectPluginSkills(
   skillAllocator: NameAllocator,
   commandAllocator: NameAllocator,
   cacheRoot: string,
+  home: string,
   summary: SkillInjectionSummary,
   logger: Logger,
 ): Promise<void> {
   const pluginSkillsDir = path.join(plugin.installPath, "skills")
   const subdirs = await listSubdirs(pluginSkillsDir)
   if (subdirs.length === 0) return
+
+  const dataDir = pluginDataDir(home, plugin.id)
 
   // GC stale version directories for this plugin once per injection run,
   // before materializing any new copies. This removes copies left by previous
@@ -401,12 +404,17 @@ async function injectPluginSkills(
     if (asSkill) {
       const { name: allocatedName, renamed } = skillAllocator.claim(plugin.id, bareName)
 
-      if (!renamed) {
-        // No collision — point OpenCode directly at the plugin's skill dir.
+      const hasVars =
+        content.includes("${CLAUDE_PLUGIN_ROOT}") || content.includes("${CLAUDE_PLUGIN_DATA}")
+      const needsCopy = renamed || hasVars
+
+      if (!needsCopy) {
+        // No collision and no vars to resolve — point OpenCode directly at the plugin's skill dir.
         skillsCfg.paths.push(skillDir)
         summary.skills++
       } else {
-        // Collision — copy the skill dir into the bridge cache and patch the name.
+        // Either a collision or the SKILL.md references plugin vars — copy the skill dir
+        // into the bridge cache so we can write a processed version.
         const cachedSkillDir = cacheDirForSkill(cacheRoot, plugin, allocatedName)
         const cachedSkillMd = path.join(cachedSkillDir, "SKILL.md")
 
@@ -414,10 +422,11 @@ async function injectPluginSkills(
         if (stale) {
           try {
             await copyDirRecursive(skillDir, cachedSkillDir, logger)
-            // Patch using the content already in memory (read above for extractSkillName)
-            // rather than re-reading the just-copied file — same bytes, avoids a round-trip.
-            const patched = patchSkillName(content, allocatedName)
-            await fs.writeFile(cachedSkillMd, patched, "utf8")
+            // Build the processed SKILL.md content: patch name when renamed, resolve vars when present.
+            let processedContent = content
+            if (renamed) processedContent = patchSkillName(processedContent, allocatedName)
+            if (hasVars) processedContent = resolvePluginVars(processedContent, plugin.installPath, dataDir)
+            await fs.writeFile(cachedSkillMd, processedContent, "utf8")
           } catch (err) {
             logger.warn(
               `failed to create bridge-cache copy for skill "${bareName}" from plugin "${plugin.id}" (${err instanceof Error ? err.message : String(err)}); skipping`,
@@ -428,7 +437,7 @@ async function injectPluginSkills(
 
         skillsCfg.paths.push(cachedSkillDir)
         summary.skills++
-        summary.renamed++
+        if (renamed) summary.renamed++
       }
     }
 
@@ -437,9 +446,13 @@ async function injectPluginSkills(
       const fmData = (parsed !== null && parsed !== FRONTMATTER_PARSE_ERROR) ? parsed.data : {}
       const modelRaw = fmData["model"]
       const model = typeof modelRaw === "string" && modelRaw.includes("/") ? modelRaw : undefined
+      const resolvedBody = resolvePluginVars(body, plugin.installPath, dataDir)
+      const resolvedDescription = description !== undefined
+        ? resolvePluginVars(description, plugin.installPath, dataDir)
+        : undefined
       const { renamed } = injectCommandEntry(
         bareName,
-        { template: body, description, model },
+        { template: resolvedBody, description: resolvedDescription, model },
         mutableCfg as unknown as { command?: Record<string, import("./inject.js").CommandEntry> },
         commandAllocator,
         plugin.id,
@@ -541,7 +554,7 @@ export async function injectSkills(
   const commandAllocator = opts.commandAllocator ?? new NameAllocator(new Set<string>())
 
   for (const plugin of plugins) {
-    await injectPluginSkills(plugin, skillsCfg, mutableCfg, skillAllocator, commandAllocator, cacheRoot, summary, logger)
+    await injectPluginSkills(plugin, skillsCfg, mutableCfg, skillAllocator, commandAllocator, cacheRoot, opts.home, summary, logger)
   }
 
   return summary

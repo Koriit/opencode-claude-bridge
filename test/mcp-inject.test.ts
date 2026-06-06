@@ -60,6 +60,7 @@ describe("mapClaudeMcpServer — http/remote mapping", () => {
     const result = mapClaudeMcpServer(
       { type: "http", url: "https://mcp.example.com/v1" },
       "/plugin",
+      "/tmp",
     ) as McpRemoteEntry
     expect(result).not.toBeNull()
     expect(result.type).toBe("remote")
@@ -74,6 +75,7 @@ describe("mapClaudeMcpServer — http/remote mapping", () => {
         headers: { Authorization: "Bearer ${CLAUDE_PLUGIN_ROOT}/token" },
       },
       "/myplug",
+      "/tmp",
     ) as McpRemoteEntry
     expect(result.headers?.["Authorization"]).toBe("Bearer /myplug/token")
   })
@@ -86,6 +88,7 @@ describe("mapClaudeMcpServer — http/remote mapping", () => {
         oauth: { clientId: "abc123", callbackPort: 3118 },
       },
       "/plugin",
+      "/tmp",
     ) as McpRemoteEntry
     expect(result.oauth).not.toBe(false)
     expect(result.oauth).not.toBeUndefined()
@@ -98,12 +101,13 @@ describe("mapClaudeMcpServer — http/remote mapping", () => {
     const result = mapClaudeMcpServer(
       { type: "http", url: "https://mcp.example.com", oauth: false },
       "/plugin",
+      "/tmp",
     ) as McpRemoteEntry
     expect(result.oauth).toBe(false)
   })
 
   test("type:http missing url returns null", () => {
-    const result = mapClaudeMcpServer({ type: "http" }, "/plugin")
+    const result = mapClaudeMcpServer({ type: "http" }, "/plugin", "/tmp")
     expect(result).toBeNull()
   })
 
@@ -111,6 +115,7 @@ describe("mapClaudeMcpServer — http/remote mapping", () => {
     const result = mapClaudeMcpServer(
       { type: "http", url: "${CLAUDE_PLUGIN_ROOT}/mcp" },
       "/abs/path",
+      "/tmp",
     ) as McpRemoteEntry
     expect(result.url).toBe("/abs/path/mcp")
   })
@@ -121,6 +126,7 @@ describe("mapClaudeMcpServer — stdio/local mapping", () => {
     const result = mapClaudeMcpServer(
       { command: "my-server", args: ["--port", "9000"] },
       "/plugin",
+      "/tmp",
     ) as McpLocalEntry
     expect(result).not.toBeNull()
     expect(result.type).toBe("local")
@@ -128,7 +134,7 @@ describe("mapClaudeMcpServer — stdio/local mapping", () => {
   })
 
   test("command with no args maps to single-element command array", () => {
-    const result = mapClaudeMcpServer({ command: "npx", args: ["@company/mcp"] }, "/p") as McpLocalEntry
+    const result = mapClaudeMcpServer({ command: "npx", args: ["@company/mcp"] }, "/p", "/tmp") as McpLocalEntry
     expect(result.command).toEqual(["npx", "@company/mcp"])
   })
 
@@ -139,6 +145,7 @@ describe("mapClaudeMcpServer — stdio/local mapping", () => {
         env: { ROOT: "${CLAUDE_PLUGIN_ROOT}/scripts", KEY: "val" },
       },
       "/myroot",
+      "/tmp",
     ) as McpLocalEntry
     expect(result.environment).toEqual({ ROOT: "/myroot/scripts", KEY: "val" })
   })
@@ -147,12 +154,13 @@ describe("mapClaudeMcpServer — stdio/local mapping", () => {
     const result = mapClaudeMcpServer(
       { command: "${CLAUDE_PLUGIN_ROOT}/bin/server", args: ["${CLAUDE_PLUGIN_ROOT}/config.json"] },
       "/abs",
+      "/tmp",
     ) as McpLocalEntry
     expect(result.command).toEqual(["/abs/bin/server", "/abs/config.json"])
   })
 
   test("missing command returns null", () => {
-    const result = mapClaudeMcpServer({ type: "stdio" }, "/plugin")
+    const result = mapClaudeMcpServer({ type: "stdio" }, "/plugin", "/tmp")
     expect(result).toBeNull()
   })
 })
