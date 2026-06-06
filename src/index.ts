@@ -2,7 +2,7 @@ import os from "node:os"
 import type { Plugin, PluginModule } from "@opencode-ai/plugin"
 import { parseBridgeConfig } from "./config.js"
 import { injectCommandsAndAgents } from "./inject.js"
-import { injectSkills } from "./skill-inject.js"
+import { injectSkills, patchNativeSkillVars, applySessionIdToNativePatches, type NativeSkillPatch } from "./skill-inject.js"
 import { injectMcp } from "./mcp-inject.js"
 import { injectLsp } from "./lsp-inject.js"
 import { createLogger } from "./logger.js"
@@ -55,6 +55,7 @@ export const server: Plugin = async (_input, options) => {
   // command templates and agent prompts (including skill-derived commands).
   let cfgRef: unknown
   let sessionIdPatched = false
+  let nativeSkillPatches: NativeSkillPatch[] = []
 
   return {
     config: async (cfg) => {
@@ -78,6 +79,16 @@ export const server: Plugin = async (_input, options) => {
         const home = os.homedir()
         const cmdAgentSummary = await injectCommandsAndAgents(selected, cfg, home, logger)
         const { commandAllocator } = cmdAgentSummary
+
+        // Patch ${CLAUDE_SKILL_DIR} and ${CLAUDE_SESSION_ID} in native/local skills
+        // that OpenCode already loaded into cfg.skills.paths before our hook ran.
+        // Must run before injectSkills so only pre-bridge paths are processed.
+        nativeSkillPatches = await patchNativeSkillVars(
+          cfg,
+          home,
+          process.env["OPENCODE_CLAUDE_BRIDGE_CACHE_ROOT"],
+          logger,
+        )
 
         // §6.3 skills — cfg.skills.paths injection (with bridge-cache copy on collision).
         const existingSkillNames = await collectExistingSkillNames({
@@ -177,6 +188,7 @@ export const server: Plugin = async (_input, options) => {
             entry.prompt = entry.prompt.replaceAll("${CLAUDE_SESSION_ID}", id)
         }
       }
+      await applySessionIdToNativePatches(nativeSkillPatches, id)
     },
 
     "chat.message": async () => {
