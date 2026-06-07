@@ -444,7 +444,9 @@ describe("bridge e2e — skill injection", () => {
   })
 
   test("injection summary includes skill count", () => {
-    expect(server!.logHas("1 skill(s)")).toBe(true)
+    expect(
+      server!.logHas("injected 1 command(s), 0 agent(s), 1 skill(s), 0 MCP server(s), 0 LSP server(s)"),
+    ).toBe(true)
   })
 })
 
@@ -569,7 +571,9 @@ describe("bridge e2e — disabled plugin contributes no skills", () => {
   })
 
   test("injection summary shows 0 skills injected", () => {
-    expect(server!.logHas("0 skill(s)")).toBe(true)
+    expect(
+      server!.logHas("injected 0 command(s), 0 agent(s), 0 skill(s), 0 MCP server(s), 0 LSP server(s)"),
+    ).toBe(true)
   })
 })
 
@@ -710,5 +714,49 @@ describe("bridge e2e — agent color sanitization", () => {
     const agent = findByName(agents, "enum-agent")
     expect(agent).toBeDefined()
     expect((agent as { color?: string } | undefined)?.color).toBe("accent")
+  })
+})
+
+// ── Test suite: S6 — ${CLAUDE_PLUGIN_ROOT} substitution end-to-end ────────────
+
+describe("bridge e2e — ${CLAUDE_PLUGIN_ROOT} substitution in injected command template", () => {
+  let fixture: { dir: string; cleanup: () => void }
+  let server: BridgeServer | undefined
+
+  beforeAll(async () => {
+    fixture = makePluginDir()
+
+    // Write a command whose template contains ${CLAUDE_PLUGIN_ROOT}. After injection
+    // the template must contain the plugin's resolved install path.
+    writeFixtureFile(
+      fixture.dir,
+      "commands/rooted.md",
+      "---\ndescription: Uses plugin root\n---\nLoad from ${CLAUDE_PLUGIN_ROOT}/data.txt",
+    )
+
+    server = await startBridge({
+      isolateCache: true,
+      isolateHome: true,
+      claude: {
+        plugins: [userPlugin("root-plugin@mkt", fixture.dir)],
+      },
+    })
+    await server.triggerHook()
+  }, TEST_TIMEOUT)
+
+  afterAll(async () => {
+    await server?.stop()
+    fixture.cleanup()
+  })
+
+  test("injected command template has ${CLAUDE_PLUGIN_ROOT} resolved to the install path", async () => {
+    const res = await server!.get("/command")
+    expect(res.status).toBe(200)
+    const commands = res.body as CommandItem[]
+    const cmd = findByName(commands, "rooted")
+    expect(cmd).toBeDefined()
+    // The template must contain the resolved absolute install path, not the literal variable.
+    expect(cmd?.template).toContain(fixture.dir)
+    expect(cmd?.template).not.toContain("${CLAUDE_PLUGIN_ROOT}")
   })
 })

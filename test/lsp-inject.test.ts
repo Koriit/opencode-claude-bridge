@@ -451,3 +451,84 @@ describe("injectLsp — I/O error skip-and-warn branches", () => {
     require("node:fs").chmodSync(path.join(tmp.dir, ".lsp.json"), 0o644)
   })
 })
+
+// ── I1: non-string args are dropped with a warning ───────────────────────────
+
+describe("mapClaudeLspServer — non-string args are dropped", () => {
+  test("good string args survive; non-string arg is dropped and onDroppedArg is called", () => {
+    let dropped = 0
+    const result = mapClaudeLspServer(
+      {
+        command: "rust-analyzer",
+        args: ["--arg1", null as any, 99 as any, "--arg2"],
+        extensionToLanguage: { ".rs": "rust" },
+      },
+      "/plugin",
+      "/tmp",
+      () => { dropped++ },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected ok")
+    expect(result.entry.command).toEqual(["rust-analyzer", "--arg1", "--arg2"])
+    expect(dropped).toBe(2)
+  })
+})
+
+describe("injectLsp — non-string arg emits a warning per dropped entry", () => {
+  test("server with a non-string arg injects with the bad arg removed and logs a warning", async () => {
+    const { dir, cleanup } = makeTempDir()
+    try {
+      writeLspJson(dir, {
+        "my-lsp": {
+          command: "rust-analyzer",
+          args: ["--good", null, "--also-good"],
+          extensionToLanguage: { ".rs": "rust" },
+        },
+      })
+      const logger = makeLogger()
+      const cfg: Record<string, unknown> = {}
+      const summary = await injectLsp([fakePlugin("p@mkt", dir)], asConfig(cfg), true, logger)
+      expect(summary.servers).toBe(1)
+      expect(logger.warnings.some((w) => w.includes("non-string arg"))).toBe(true)
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+// ── S4: top-level array and bad server-entry coverage ─────────────────────────
+
+describe("injectLsp — S4 error branches", () => {
+  test("top-level JSON array emits a 'not a JSON object' warning", async () => {
+    const { dir, cleanup } = makeTempDir()
+    try {
+      writeFileSync(path.join(dir, ".lsp.json"), JSON.stringify([1, 2, 3]))
+      const logger = makeLogger()
+      const summary = await injectLsp([fakePlugin("p@mkt", dir)], asConfig({}), true, logger)
+      expect(summary.servers).toBe(0)
+      expect(logger.warnings.some((w) => w.includes("not a JSON object"))).toBe(true)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("bad server entry (array value) is skipped with warn; good entry injects", async () => {
+    const { dir, cleanup } = makeTempDir()
+    try {
+      writeLspJson(dir, {
+        good: {
+          command: "rust-analyzer",
+          extensionToLanguage: { ".rs": "rust" },
+        },
+        bad: ["this", "is", "an", "array"],
+      })
+      const logger = makeLogger()
+      const cfg: Record<string, unknown> = {}
+      const summary = await injectLsp([fakePlugin("p@mkt", dir)], asConfig(cfg), true, logger)
+      expect(summary.servers).toBe(1)
+      expect(logger.warnings.some((w) => w.includes("bad") && w.includes("skipping"))).toBe(true)
+    } finally {
+      cleanup()
+    }
+  })
+})

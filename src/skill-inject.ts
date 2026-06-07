@@ -152,10 +152,10 @@ async function copyDirRecursive(srcDir: string, dstDir: string, logger: Logger):
  * the cache root. Rules:
  *   - Replace every `/` (path separator) with `_`
  *   - Replace every `..` component with `__` (prevents parent traversal)
- *   - Strip a leading `.` (prevents hidden-file names in the cache dir)
+ *   - Replace a leading `.` with `_` (prevents hidden-file names in the cache dir)
  *   - Replace every `\` (Windows path separator) with `_`
  *
- * The input is always a non-empty string; the output is a safe, flat filename.
+ * The output is a safe, flat filename.
  */
 export function sanitizeCacheSegment(segment: string): string {
   return segment
@@ -413,8 +413,10 @@ async function injectPluginSkills(
 
       if (!needsCopy) {
         // No collision and no vars to resolve — point OpenCode directly at the plugin's skill dir.
-        skillsCfg.paths.push(skillDir)
-        summary.skills++
+        if (!skillsCfg.paths.includes(skillDir)) {
+          skillsCfg.paths.push(skillDir)
+          summary.skills++
+        }
       } else {
         // Either a collision or the SKILL.md references plugin vars — copy the skill dir
         // into the bridge cache so we can write a processed version.
@@ -439,9 +441,11 @@ async function injectPluginSkills(
           }
         }
 
-        skillsCfg.paths.push(cachedSkillDir)
-        summary.skills++
-        if (renamed) summary.renamed++
+        if (!skillsCfg.paths.includes(cachedSkillDir)) {
+          skillsCfg.paths.push(cachedSkillDir)
+          summary.skills++
+          if (renamed) summary.renamed++
+        }
       }
     }
 
@@ -470,6 +474,18 @@ async function injectPluginSkills(
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
+
+/**
+ * Read the current `cfg.skills.paths` array as a snapshot (or `undefined` when
+ * the config has no paths yet). Centralises the awkward cast so the shape is
+ * defined in one place.
+ */
+export function readSkillPaths(cfg: import("@opencode-ai/plugin").Config): string[] | undefined {
+  return (cfg as unknown as InjectableConfig).skills &&
+    typeof (cfg as unknown as InjectableConfig).skills !== "boolean"
+    ? ((cfg as unknown as InjectableConfig).skills as SkillsConfig).paths
+    : undefined
+}
 
 /** Summary counters for skills injection collected across all plugins. */
 export interface SkillInjectionSummary {

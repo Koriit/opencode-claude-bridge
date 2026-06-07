@@ -177,6 +177,37 @@ describe("listClaudePlugins", () => {
     expect(warnings.some((w) => w.includes("malformed"))).toBe(true)
   })
 
+  test("skips an entry with missing version field and emits a malformed warning", async () => {
+    const { logger, warnings } = recordingLogger()
+    const json = JSON.stringify([
+      // No version field — otherwise valid
+      { id: "nover@m", scope: "user", enabled: true, installPath: "/x" },
+    ])
+    const result = await listClaudePlugins(fakeShell({ exitCode: 0, stdout: json }), logger)
+    expect(result).toEqual([])
+    expect(warnings.some((w) => w.includes("malformed"))).toBe(true)
+  })
+
+  test("skips an entry with a non-string version and emits a malformed warning", async () => {
+    const { logger, warnings } = recordingLogger()
+    const json = JSON.stringify([
+      { id: "badver@m", version: 42, scope: "user", enabled: true, installPath: "/x" },
+    ])
+    const result = await listClaudePlugins(fakeShell({ exitCode: 0, stdout: json }), logger)
+    expect(result).toEqual([])
+    expect(warnings.some((w) => w.includes("malformed"))).toBe(true)
+  })
+
+  test("returns null and warns when the output is not an array (object)", async () => {
+    const { logger, warnings } = recordingLogger()
+    const result = await listClaudePlugins(
+      fakeShell({ exitCode: 0, stdout: '{"notArray": true}' }),
+      logger,
+    )
+    expect(result).toBeNull()
+    expect(warnings.some((w) => w.includes("not an array"))).toBe(true)
+  })
+
   test("a missing CLI becomes a hard error under a strict logger", async () => {
     const strict = createLogger(
       { app: { log: async () => ({ data: true }) } } as unknown as PluginInput["client"],

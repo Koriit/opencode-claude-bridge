@@ -60,8 +60,8 @@ export function createLogger(client: LogClient, strict: boolean): Logger {
     warn(msg, opts) {
       const fatalInStrict = opts?.fatalInStrict ?? true
       warningCount++
-      if (strict && fatalInStrict) throw new BridgeError(msg)
       emit("warn", msg)
+      if (strict && fatalInStrict) throw new BridgeError(msg)
     },
     hadWarnings() {
       return warningCount > 0

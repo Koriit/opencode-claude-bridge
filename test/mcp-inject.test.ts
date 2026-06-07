@@ -434,3 +434,110 @@ describe("injectMcp — I/O error skip-and-warn branches", () => {
     require("node:fs").chmodSync(path.join(tmp.dir, ".mcp.json"), 0o644)
   })
 })
+
+// ── S1: type:"sse" precise warning ───────────────────────────────────────────
+
+describe("mapClaudeMcpServer — type:sse is not supported", () => {
+  test("returns null for type:sse", () => {
+    const result = mapClaudeMcpServer(
+      { type: "sse", url: "https://mcp.example.com/sse" } as any,
+      "/plugin",
+      "/tmp",
+    )
+    expect(result).toBeNull()
+  })
+
+  test("injectMcp emits a precise sse warning and skips the server", async () => {
+    const { dir, cleanup } = makeTempDir()
+    try {
+      writeMcpJson(dir, {
+        mcpServers: {
+          "my-sse": { type: "sse", url: "https://sse.example.com" },
+        },
+      })
+      const logger = makeLogger()
+      const summary = await injectMcp([fakePlugin("p@mkt", dir)], asConfig({}), true, logger)
+      expect(summary.servers).toBe(0)
+      expect(
+        logger.warnings.some((w) => w.includes("sse") && w.includes("not supported")),
+      ).toBe(true)
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+// ── I1: non-string args are dropped with a warning ───────────────────────────
+
+describe("mapClaudeMcpServer — non-string args are dropped", () => {
+  test("good string args survive; non-string arg is dropped and onDroppedArg is called", () => {
+    let dropped = 0
+    const result = mapClaudeMcpServer(
+      { command: "node", args: ["server.js", null as any, 42 as any, "--flag"] } as any,
+      "/plugin",
+      "/tmp",
+      () => { dropped++ },
+    )
+    expect(result).not.toBeNull()
+    const local = result as McpLocalEntry
+    // null and 42 are dropped; "server.js" and "--flag" survive
+    expect(local.command).toEqual(["node", "server.js", "--flag"])
+    expect(dropped).toBe(2)
+  })
+})
+
+describe("injectMcp — non-string arg emits a warning per dropped entry", () => {
+  test("server with a non-string arg injects with the bad arg removed and logs a warning", async () => {
+    const { dir, cleanup } = makeTempDir()
+    try {
+      writeMcpJson(dir, {
+        mcpServers: {
+          "my-server": { command: "node", args: ["good.js", null, "--ok"] },
+        },
+      })
+      const logger = makeLogger()
+      const cfg: Record<string, unknown> = {}
+      const summary = await injectMcp([fakePlugin("p@mkt", dir)], asConfig(cfg), true, logger)
+      expect(summary.servers).toBe(1)
+      expect(logger.warnings.some((w) => w.includes("non-string arg"))).toBe(true)
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+// ── S4: top-level array and bad server-entry coverage ─────────────────────────
+
+describe("injectMcp — S4 error branches", () => {
+  test("top-level JSON array emits a 'not a JSON object' warning", async () => {
+    const { dir, cleanup } = makeTempDir()
+    try {
+      writeFileSync(path.join(dir, ".mcp.json"), JSON.stringify([1, 2, 3]))
+      const logger = makeLogger()
+      const summary = await injectMcp([fakePlugin("p@mkt", dir)], asConfig({}), true, logger)
+      expect(summary.servers).toBe(0)
+      expect(logger.warnings.some((w) => w.includes("not a JSON object"))).toBe(true)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("bad server entry (array value) is skipped with warn; good entry injects", async () => {
+    const { dir, cleanup } = makeTempDir()
+    try {
+      writeMcpJson(dir, {
+        mcpServers: {
+          good: { command: "node", args: ["s.js"] },
+          bad: ["this", "is", "an", "array"],
+        },
+      })
+      const logger = makeLogger()
+      const cfg: Record<string, unknown> = {}
+      const summary = await injectMcp([fakePlugin("p@mkt", dir)], asConfig(cfg), true, logger)
+      expect(summary.servers).toBe(1)
+      expect(logger.warnings.some((w) => w.includes("bad") && w.includes("skipping"))).toBe(true)
+    } finally {
+      cleanup()
+    }
+  })
+})

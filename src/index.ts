@@ -2,12 +2,19 @@ import os from "node:os"
 import type { Plugin, PluginModule } from "@opencode-ai/plugin"
 import { parseBridgeConfig } from "./config.js"
 import { injectCommandsAndAgents } from "./inject.js"
-import { injectSkills, patchNativeSkillVars } from "./skill-inject.js"
+import { injectSkills, patchNativeSkillVars, readSkillPaths } from "./skill-inject.js"
 import { injectMcp } from "./mcp-inject.js"
 import { injectLsp } from "./lsp-inject.js"
 import { createLogger } from "./logger.js"
 import { listClaudePlugins, selectEnabledPlugins } from "./selection.js"
 import { collectExistingSkillNames } from "./skill-scan.js"
+
+/**
+ * Symbol used as a non-enumerable marker on a `cfg` object to detect when the
+ * bridge has already processed it. Non-enumerable so it is invisible to OpenCode's
+ * own config serialization / inspection passes.
+ */
+const BRIDGE_PROCESSED = Symbol("opencode-claude-bridge.processed")
 
 /**
  * Parse an environment-variable value as a boolean, matching the set of truthy
@@ -47,6 +54,17 @@ export const server: Plugin = async (_input, options) => {
     config: async (cfg) => {
       const logger = createLogger(_input.client, bridge.strict)
       try {
+        // Idempotency guard: if OpenCode invokes the config hook twice on the same mutable
+        // cfg, skip the second run. Without this, the allocators re-seed from their own
+        // prior output, producing duplicate renamed commands/agents and double-pushed skill
+        // paths. The sentinel is non-enumerable so it is invisible to config serialization.
+        const cfgObj = cfg as unknown as Record<symbol, boolean>
+        if (cfgObj[BRIDGE_PROCESSED]) {
+          logger.info("config hook invoked again on the same cfg object; skipping (idempotency guard)")
+          return
+        }
+        Object.defineProperty(cfgObj, BRIDGE_PROCESSED, { value: true, enumerable: false })
+
         // Replay parse-time validation warnings (strict-promotable).
         for (const w of warnings) logger.warn(w)
 
@@ -79,7 +97,7 @@ export const server: Plugin = async (_input, options) => {
         const existingSkillNames = await collectExistingSkillNames({
           home,
           projectDir: _input.directory,
-          skillsPaths: (cfg as unknown as { skills?: { paths?: string[] } }).skills?.paths,
+          skillsPaths: readSkillPaths(cfg),
           // Mirror OpenCode's RuntimeFlags so the bridge scans the same dirs OpenCode will.
           disableExternalSkills: parseBooleanEnv(process.env["OPENCODE_DISABLE_EXTERNAL_SKILLS"]),
           disableClaudeCodeSkills:
@@ -99,28 +117,6 @@ export const server: Plugin = async (_input, options) => {
         // §6.5 LSP — cfg.lsp injection (opt-in via allowLsp; respects cfg.lsp === false).
         const lspSummary = await injectLsp(selected, cfg, bridge.allowLsp, logger)
 
-        // Remove commands that OpenCode's native Claude integration may have
-        // auto-loaded from blocked plugins. Runs after all bridge injection so
-        // OpenCode's own loading has had time to run during the async awaits above.
-        const selectedIds = new Set(selected.map((p) => p.id))
-        const blockedPlugins = all.filter((p) => !selectedIds.has(p.id))
-        if (blockedPlugins.length > 0) {
-          const mutableCmd = (cfg as unknown as { command?: Record<string, { description?: string }> }).command
-          if (mutableCmd && typeof mutableCmd === "object") {
-            for (const [name, entry] of Object.entries(mutableCmd)) {
-              const desc = entry?.description
-              if (typeof desc === "string") {
-                for (const bp of blockedPlugins) {
-                  if (desc.endsWith(`[${bp.id}]`)) {
-                    delete mutableCmd[name]
-                    break
-                  }
-                }
-              }
-            }
-          }
-        }
-
         // §10 concise per-run summary.
         const renamed = cmdAgentSummary.renamed + skillSummary.renamed + mcpSummary.renamed + lspSummary.renamed
         const summaryParts: string[] = [
@@ -133,7 +129,12 @@ export const server: Plugin = async (_input, options) => {
       } catch (err) {
         // Strict mode: surface a hard failure. Non-strict: the hook must never throw,
         // so OpenCode still starts (design §10).
-        if (bridge.strict) throw err
+        if (bridge.strict) {
+          // Emit a terminal marker before propagating so waitForHookComplete in the e2e
+          // harness can return promptly instead of burning the full timeout.
+          logger.info("hook complete (strict failure)")
+          throw err
+        }
         const detail = err instanceof Error ? err.message : String(err)
         // Strict already re-threw above, so this soft warning only runs in non-strict mode;
         // route it through the logger so all bridge output shares one format.

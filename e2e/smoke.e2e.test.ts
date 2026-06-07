@@ -48,9 +48,6 @@ describe("bridge e2e — resolution & posture", () => {
         expect(server.logHas("beta@mkt")).toBe(false)
         expect(server.logHas("gamma@mkt")).toBe(false)
 
-        // Running version (1.15.x) is in range -> no version warning.
-        expect(server.logHas("untested OpenCode version")).toBe(false)
-
         // Commands, agents, and skills injection summary is emitted.
         expect(server.logHas("injected 0 command(s), 0 agent(s), 0 skill(s)")).toBe(true)
       } finally {
@@ -101,6 +98,60 @@ describe("bridge e2e — resolution & posture", () => {
         // the authoritative check — OpenCode's own Claude integration may independently
         // log about all discovered plugins, so a broad buffer check is unreliable.
         expect(server.logHas("resolved 1 enabled Claude plugin(s): zeta@mkt")).toBe(true)
+      } finally {
+        await server?.stop()
+      }
+    },
+    TEST_TIMEOUT,
+  )
+
+  test(
+    "I5: truly-missing claude CLI (not on PATH) degrades gracefully",
+    async () => {
+      // claude:false omits the fake binary and strips known claude dirs from PATH.
+      // On machines where claude and bun share a directory that cannot be stripped
+      // without breaking the runtime, Bun's $-shell may still locate claude via the
+      // startup PATH — in that case the "exited N" branch fires rather than the
+      // catch-branch "is it on PATH?" path. Both demonstrate graceful degradation.
+      let server: BridgeServer | undefined
+      try {
+        server = await startBridge({ claude: false })
+
+        await server.triggerHook()
+
+        // The server is still healthy despite the absent/unreachable CLI.
+        const health = await server.get("/global/health")
+        expect(health.status).toBe(200)
+
+        // Either the catch-branch ("is it on PATH?") or the exit-code branch
+        // ("injecting nothing this run") fires — both are degradation paths.
+        expect(
+          server.logHas("is it on PATH?") || server.logHas("injecting nothing this run"),
+        ).toBe(true)
+      } finally {
+        await server?.stop()
+      }
+    },
+    TEST_TIMEOUT,
+  )
+
+  test(
+    "I6: strict mode with a missing CLI surfaces a failure and the server still comes up",
+    async () => {
+      // strict:true + missing CLI → the hook throws; OpenCode surfaces the failure but
+      // the server itself stays up (the hook failure is isolated to the instance init).
+      let server: BridgeServer | undefined
+      try {
+        server = await startBridge({ options: { strict: true }, claude: false })
+
+        await server.triggerHook()
+
+        // The "hook complete (strict failure)" marker is emitted so the harness returns promptly.
+        expect(server.logHas("hook complete (strict failure)")).toBe(true)
+
+        // The server itself is still healthy — hook failure is per-instance, not process-level.
+        const health = await server.get("/global/health")
+        expect(health.status).toBe(200)
       } finally {
         await server?.stop()
       }

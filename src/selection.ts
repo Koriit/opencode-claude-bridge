@@ -14,6 +14,7 @@ function isClaudePlugin(value: unknown): value is ClaudePlugin {
   const projectPath = v["projectPath"]
   return (
     typeof v["id"] === "string" &&
+    typeof v["version"] === "string" &&
     typeof v["installPath"] === "string" &&
     typeof v["enabled"] === "boolean" &&
     (v["scope"] === "user" || v["scope"] === "project" || v["scope"] === "local") &&

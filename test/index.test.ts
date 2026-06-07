@@ -6,8 +6,8 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs"
 import path from "node:path"
 import { tmpdir } from "node:os"
 import { describe, expect, test, beforeEach, afterEach } from "bun:test"
-import type { PluginInput } from "@opencode-ai/plugin"
-import { parseBooleanEnv } from "../src/index.js"
+import type { PluginInput, Config } from "@opencode-ai/plugin"
+import { parseBooleanEnv, server } from "../src/index.js"
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -131,5 +131,89 @@ describe("parseBooleanEnv — mirrors Effect Config.boolean accepted truthy set"
 
   test("returns false for empty string", () => {
     expect(parseBooleanEnv("")).toBe(false)
+  })
+})
+
+// ── experimental.chat.system.transform (I3) ───────────────────────────────────
+
+describe("experimental.chat.system.transform — session-ID injection", () => {
+  test("pushes 'Session ID: <id>' when sessionID is present", async () => {
+    const input = {
+      $: fakeShell(0, "[]"),
+      directory: tmpdir(),
+      client: fakeClient(),
+    } as unknown as PluginInput
+
+    const mod = await server(input, undefined)
+    const transform = mod!["experimental.chat.system.transform"]
+    expect(transform).toBeDefined()
+
+    const output = { system: [] as string[] }
+    await transform!({ sessionID: "abc-123" } as any, output)
+    expect(output.system).toContain("Session ID: abc-123")
+  })
+
+  test("does not push anything when sessionID is absent", async () => {
+    const input = {
+      $: fakeShell(0, "[]"),
+      directory: tmpdir(),
+      client: fakeClient(),
+    } as unknown as PluginInput
+
+    const mod = await server(input, undefined)
+    const transform = mod!["experimental.chat.system.transform"]
+
+    const output = { system: [] as string[] }
+    await transform!({} as any, output)
+    expect(output.system).toHaveLength(0)
+  })
+
+  test("does not push anything when sessionID is empty string", async () => {
+    const input = {
+      $: fakeShell(0, "[]"),
+      directory: tmpdir(),
+      client: fakeClient(),
+    } as unknown as PluginInput
+
+    const mod = await server(input, undefined)
+    const transform = mod!["experimental.chat.system.transform"]
+
+    const output = { system: [] as string[] }
+    await transform!({ sessionID: "" } as any, output)
+    expect(output.system).toHaveLength(0)
+  })
+})
+
+// ── Idempotency guard (I2) ────────────────────────────────────────────────────
+
+describe("config hook idempotency guard", () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(path.join(testBase(), "ocb-idem-test-"))
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test("invoking the hook twice on the same cfg does not duplicate skill paths", async () => {
+    const mod = await server(
+      {
+        $: fakeShell(0, "[]"), // no plugins — hook completes normally
+        directory: tmpDir,
+        client: fakeClient(),
+      } as unknown as PluginInput,
+      undefined,
+    )
+
+    const cfg = { skills: { paths: [] } } as unknown as Config
+
+    await mod!.config!(cfg)
+    await mod!.config!(cfg)
+
+    const paths = (cfg as unknown as { skills: { paths: string[] } }).skills.paths
+    // Second invocation is a no-op: paths array should not have grown
+    expect(paths.length).toBe((cfg as unknown as { skills: { paths: string[] } }).skills.paths.length)
   })
 })

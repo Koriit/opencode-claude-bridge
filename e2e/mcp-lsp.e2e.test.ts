@@ -96,8 +96,8 @@ describe("bridge e2e — MCP policy off (default)", () => {
     expect(Object.keys(mcp).some((k) => k.includes("mcp-test"))).toBe(false)
   })
 
-  test("policy skip is logged", () => {
-    expect(server!.logHas("policy")).toBe(true)
+  test("policy skip is logged with a precise message", () => {
+    expect(server!.logHas("skipped 1 MCP server(s) (policy: allowMcp is off)")).toBe(true)
   })
 })
 
@@ -201,8 +201,8 @@ describe("bridge e2e — LSP policy off (default)", () => {
     expect(server!.logHas("0 LSP server(s)")).toBe(true)
   })
 
-  test("LSP policy skip is logged", () => {
-    expect(server!.logHas("policy")).toBe(true)
+  test("LSP policy skip is logged with a precise message", () => {
+    expect(server!.logHas("skipped 1 LSP server(s) (policy: allowLsp is off)")).toBe(true)
   })
 })
 

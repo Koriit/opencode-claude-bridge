@@ -1,5 +1,5 @@
 import { spawn, type Subprocess } from "bun"
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -53,8 +53,13 @@ export interface FakeClaude {
 export interface StartOptions {
   /** Bridge tuple options (the `{ ...bridgeConfig }` second element). Omit for bare-string form. */
   options?: Record<string, unknown>
-  /** Fake `claude` behavior, or a factory given the generated project dir (for projectPath wiring). */
-  claude: FakeClaude | ((projectDir: string) => FakeClaude)
+  /**
+   * Fake `claude` behavior, or a factory given the generated project dir (for projectPath wiring).
+   * Pass `false` to omit the fake `claude` binary entirely (and remove the fake bin dir from PATH),
+   * simulating a host where the `claude` CLI is not installed — exercises the "is it on PATH?" catch
+   * branch in `selection.ts`.
+   */
+  claude: FakeClaude | ((projectDir: string) => FakeClaude) | false
   /**
    * Override the bridge-cache root for this server. When set, the cache dir is created as a
    * temp dir, injected via the `OPENCODE_CLAUDE_BRIDGE_CACHE_ROOT` env var, and removed on
@@ -69,6 +74,10 @@ export interface StartOptions {
    * `collectExistingSkillNames` does not scan the real user's `~/.claude/skills`,
    * `~/.agents/skills`, or XDG opencode skill dirs. This makes skill collision tests
    * hermetic regardless of the host's real skills.
+   *
+   * `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are also redirected into the isolated
+   * home so the bridge's XDG skill scan cannot read the real `~/.config/opencode`
+   * directories on hosts where those variables are exported.
    *
    * The isolated home is available as `BridgeServer.homeDir` before `triggerHook()` is called,
    * so tests can plant native skills/config before the hook runs.
@@ -177,13 +186,13 @@ async function waitForPort(getLog: () => string, timeoutMs = 30_000): Promise<nu
  * The hook always emits one of these markers per run:
  *   - `"injected N command(s)"` (resolution + injection succeeded)
  *   - `"injecting nothing this run"` (CLI failed / returned non-zero)
- *   - `"warning:"` (strict failure or version warning only; no hook-complete marker then)
+ *   - `"hook complete (strict failure)"` (strict mode + fatal warning)
  *
  * So we wait for any of those strings, or fall back to a 10s cap so we don't
  * hang forever if an unexpected code path emits nothing.
  */
 async function waitForHookComplete(logHas: (needle: string) => boolean, timeoutMs = 10_000): Promise<void> {
-  const MARKERS = ["injected ", "injecting nothing this run"]
+  const MARKERS = ["injected ", "injecting nothing this run", "hook complete (strict failure)"]
   const deadline = Date.now() + timeoutMs
   for (;;) {
     if (MARKERS.some((m) => logHas(m))) return
@@ -227,8 +236,26 @@ export async function startBridge(opts: StartOptions): Promise<BridgeServer> {
     JSON.stringify({ $schema: "https://opencode.ai/config.json", plugin: [pluginEntry] }, null, 2),
   )
 
-  const behavior = typeof opts.claude === "function" ? opts.claude(projectDir) : opts.claude
-  const claudeBin = writeFakeClaude(behavior)
+  // When claude is false, skip planting the fake binary. claudeBin is set to an empty
+  // string so it can still be passed to rmSync on stop() without ill effect.
+  let claudeBin: string
+  if (opts.claude === false) {
+    claudeBin = ""
+  } else {
+    const behavior = typeof opts.claude === "function" ? opts.claude(projectDir) : opts.claude
+    claudeBin = writeFakeClaude(behavior)
+  }
+
+  // When claude:false, strip any PATH entry that contains a real `claude` binary so
+  // the child cannot find one on the host. We filter by the presence of a `claude`
+  // file in each colon-separated directory — that makes the absence hermetic even
+  // on developer machines that have the real Claude CLI installed.
+  function stripClaudeFromPath(envPath: string): string {
+    return envPath
+      .split(path.delimiter)
+      .filter((dir) => !existsSync(path.join(dir, "claude")))
+      .join(path.delimiter)
+  }
 
   let buffer = ""
   const append = (s: string) => {
@@ -242,12 +269,24 @@ export async function startBridge(opts: StartOptions): Promise<BridgeServer> {
   // entire group (including any child workers) with `process.kill(-pgid, ...)`.
   // Without this, a child spawned by opencode may survive after the parent exits,
   // leaving orphan "opencode serve" processes across back-to-back test runs.
+  const hostPath = process.env["PATH"] ?? ""
   const childEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
-    PATH: `${claudeBin}:${process.env["PATH"] ?? ""}`,
+    // When claude is false, strip all PATH entries containing a `claude` binary so
+    // the child cannot accidentally pick up the real Claude CLI from the host.
+    PATH: claudeBin
+      ? `${claudeBin}:${hostPath}`
+      : stripClaudeFromPath(hostPath),
   }
   if (cacheDir) childEnv["OPENCODE_CLAUDE_BRIDGE_CACHE_ROOT"] = cacheDir
-  if (homeDir) childEnv["HOME"] = homeDir
+  if (homeDir) {
+    childEnv["HOME"] = homeDir
+    // Redirect XDG dirs into the isolated home so skill scans that respect
+    // XDG_CONFIG_HOME (e.g. collectExistingSkillNames reading ~/.config/opencode)
+    // don't leak the real host config into the hermetic test environment.
+    childEnv["XDG_CONFIG_HOME"] = path.join(homeDir, ".config")
+    childEnv["XDG_DATA_HOME"] = path.join(homeDir, ".local", "share")
+  }
 
   const proc: Subprocess = spawn(
     ["opencode", "serve", "--port", "0", "--hostname", "127.0.0.1", "--print-logs", "--log-level", "INFO"],
@@ -327,7 +366,7 @@ export async function startBridge(opts: StartOptions): Promise<BridgeServer> {
         clearTimeout(killTimeout)
       }
       rmSync(projectDir, { recursive: true, force: true })
-      rmSync(claudeBin, { recursive: true, force: true })
+      if (claudeBin) rmSync(claudeBin, { recursive: true, force: true })
       // Only remove cache dir if the harness created it; caller-supplied paths are
       // the caller's responsibility to clean up.
       if (cacheDir && cacheDirOwned) rmSync(cacheDir, { recursive: true, force: true })

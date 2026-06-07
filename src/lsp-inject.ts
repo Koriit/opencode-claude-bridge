@@ -146,6 +146,7 @@ export type MapLspResult =
  * - `env` → `env` (with plugin vars resolved)
  * - `initializationOptions` or `settings` → `initialization` (best-effort)
  * - `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` resolved in command, args, env values
+ * - non-string entries in `args` are dropped; `onDroppedArg` is called for each dropped item
  * - `workspaceFolder` is not mapped (no equivalent in OpenCode V1 LSP entry shape)
  *
  * Returns a discriminated result so callers emit precise per-reason warnings. The
@@ -159,6 +160,7 @@ export function mapClaudeLspServer(
   server: ClaudeLspServer,
   installPath: string,
   dataDir: string,
+  onDroppedArg?: () => void,
 ): MapLspResult {
   if (!server.command || typeof server.command !== "string") {
     return { ok: false, reason: "missing-command" }
@@ -171,9 +173,11 @@ export function mapClaudeLspServer(
 
   const cmd = resolvePluginVars(server.command, installPath, dataDir)
   const args = Array.isArray(server.args)
-    ? server.args.map((a) =>
-        typeof a === "string" ? resolvePluginVars(a, installPath, dataDir) : String(a),
-      )
+    ? server.args.flatMap((a) => {
+        if (typeof a === "string") return [resolvePluginVars(a, installPath, dataDir)]
+        onDroppedArg?.()
+        return []
+      })
     : []
 
   const entry: LspEntry = { command: [cmd, ...args] }
@@ -275,7 +279,12 @@ async function injectPluginLsp(
       continue
     }
 
-    const result = mapClaudeLspServer(serverDef, plugin.installPath, dataDir)
+    const result = mapClaudeLspServer(serverDef, plugin.installPath, dataDir, () => {
+      logger.warn(
+        `LSP server "${serverName}" in plugin "${plugin.id}" has a non-string arg entry; dropping it`,
+        { fatalInStrict: false },
+      )
+    })
     if (!result.ok) {
       // Precise per-reason warning — the discriminated result prevents misclassification
       // if new rejection reasons are added to mapClaudeLspServer later.

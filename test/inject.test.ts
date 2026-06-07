@@ -9,6 +9,7 @@ import {
   sanitizeAgentColor,
   sanitizePluginId,
   pluginDataDir,
+  coerceFiniteNumber,
   type InjectableConfig,
 } from "../src/inject.js"
 import type { Logger } from "../src/logger.js"
@@ -539,16 +540,10 @@ describe("injectCommandsAndAgents — agent injection", () => {
     expect(cfg.agent?.["tuned"]?.top_p).toBe(0.9)
   })
 
-  test("drops non-finite temperature values (OpenCode uses Schema.Finite)", async () => {
-    // YAML does not produce Infinity/NaN from normal frontmatter, but defensive check
-    // matters when data comes from programmatically-constructed plugin files or odd YAML parsers.
-    // We test the guard directly by calling the unit function rather than YAML-serialising Infinity.
-    const cfg: InjectableConfig = {}
-    const logger = makeLogger()
-    // Directly exercise the inject function with a fabricated frontmatter object by
-    // writing a file and then confirming Infinity can't sneak in via YAML (YAML produces null for .inf)
+  test("maps a finite temperature value through to the agent entry", async () => {
     writeFile(dir, "agents/finiteguard.md", "---\ndescription: FiniteGuard\ntemperature: 0.7\n---\nYou are finite.")
-    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, logger)
+    const cfg: InjectableConfig = {}
+    await injectCommandsAndAgents([fakePlugin("p@m", dir)], asConfig(cfg), dir, makeLogger())
     expect(cfg.agent?.["finiteguard"]?.temperature).toBe(0.7)
   })
 
@@ -1058,5 +1053,53 @@ describe("injectCommandsAndAgents — I/O error skip-and-warn branches", () => {
     expect(summary.agents).toBe(0)
     expect(logger.warnings.some((w) => w.includes("could not read"))).toBe(true)
     require("node:fs").chmodSync(path.join(dir, "agents", "secret.md"), 0o644)
+  })
+})
+
+// ── coerceFiniteNumber ────────────────────────────────────────────────────────
+
+describe("coerceFiniteNumber — rejects values that would fail OpenCode's Schema.Finite", () => {
+  test("passes through a finite integer", () => {
+    expect(coerceFiniteNumber(1)).toBe(1)
+  })
+
+  test("passes through a finite float", () => {
+    expect(coerceFiniteNumber(0.7)).toBe(0.7)
+  })
+
+  test("passes through zero", () => {
+    expect(coerceFiniteNumber(0)).toBe(0)
+  })
+
+  test("passes through a negative finite number", () => {
+    expect(coerceFiniteNumber(-0.5)).toBe(-0.5)
+  })
+
+  test("returns undefined for NaN", () => {
+    expect(coerceFiniteNumber(NaN)).toBeUndefined()
+  })
+
+  test("returns undefined for Infinity", () => {
+    expect(coerceFiniteNumber(Infinity)).toBeUndefined()
+  })
+
+  test("returns undefined for -Infinity", () => {
+    expect(coerceFiniteNumber(-Infinity)).toBeUndefined()
+  })
+
+  test("returns undefined for a string", () => {
+    expect(coerceFiniteNumber("0.7")).toBeUndefined()
+  })
+
+  test("returns undefined for null", () => {
+    expect(coerceFiniteNumber(null)).toBeUndefined()
+  })
+
+  test("returns undefined for undefined", () => {
+    expect(coerceFiniteNumber(undefined)).toBeUndefined()
+  })
+
+  test("returns undefined for an object", () => {
+    expect(coerceFiniteNumber({})).toBeUndefined()
   })
 })

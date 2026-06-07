@@ -142,9 +142,11 @@ function resolveRecordValues(
  * Map a Claude `.mcp.json` server entry to an OpenCode V1 MCP entry.
  *
  * - `type:"http"` → `{ type:"remote", url, headers?, oauth? }`
+ * - `type:"sse"` → skipped (not supported by OpenCode); returns null
  * - everything else (stdio, absent) → `{ type:"local", command:[cmd,...args], environment? }`
  * - `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PLUGIN_DATA}` resolved in all string fields
  * - oauth fields passed through with same camelCase names (OpenCode V1 matches Claude exactly)
+ * - non-string entries in `args` are dropped; `onDroppedArg` is called for each dropped item
  *
  * Returns `null` if the entry is malformed and should be skipped.
  */
@@ -152,7 +154,15 @@ export function mapClaudeMcpServer(
   server: ClaudeMcpServer,
   installPath: string,
   dataDir: string,
+  onDroppedArg?: () => void,
 ): McpEntry | null {
+  if (server.type === "sse") {
+    // SSE transport is not supported by OpenCode. Return null so the caller emits a
+    // precise warning rather than falling through to the local branch and producing a
+    // misleading "missing command" diagnosis.
+    return null
+  }
+
   if (server.type === "http") {
     // Remote entry
     if (!server.url || typeof server.url !== "string") return null
@@ -196,7 +206,11 @@ export function mapClaudeMcpServer(
   if (!server.command || typeof server.command !== "string") return null
   const cmd = resolvePluginVars(server.command, installPath, dataDir)
   const args = Array.isArray(server.args)
-    ? server.args.map((a) => (typeof a === "string" ? resolvePluginVars(a, installPath, dataDir) : String(a)))
+    ? server.args.flatMap((a) => {
+        if (typeof a === "string") return [resolvePluginVars(a, installPath, dataDir)]
+        onDroppedArg?.()
+        return []
+      })
     : []
 
   const entry: McpLocalEntry = { type: "local", command: [cmd, ...args] }
@@ -289,7 +303,20 @@ async function injectPluginMcp(
       continue
     }
 
-    const mapped = mapClaudeMcpServer(serverDef as ClaudeMcpServer, plugin.installPath, dataDir)
+    const def = serverDef as ClaudeMcpServer
+    if (def.type === "sse") {
+      logger.warn(
+        `MCP server "${serverName}" in plugin "${plugin.id}" uses sse transport which is not supported by OpenCode; skipping`,
+      )
+      continue
+    }
+
+    const mapped = mapClaudeMcpServer(def, plugin.installPath, dataDir, () => {
+      logger.warn(
+        `MCP server "${serverName}" in plugin "${plugin.id}" has a non-string arg entry; dropping it`,
+        { fatalInStrict: false },
+      )
+    })
     if (mapped === null) {
       logger.warn(
         `MCP server "${serverName}" in plugin "${plugin.id}" is missing required fields (url for http, command for local); skipping`,

@@ -578,6 +578,17 @@ async function injectPluginCommands(
   }
 }
 
+// ── Numeric helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Return `value` unchanged when it is a finite number, or `undefined` otherwise.
+ * OpenCode's `Schema.Finite` rejects `NaN`, `Infinity`, and `-Infinity`; feeding
+ * those values into cfg would crash the host outside the bridge's try/catch.
+ */
+export function coerceFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && isFinite(value) ? value : undefined
+}
+
 // ── Agent injection for one plugin ───────────────────────────────────────────
 
 /**
@@ -684,13 +695,11 @@ async function injectPluginAgents(
     const variant = data["variant"]
     if (typeof variant === "string") entry.variant = variant
 
-    const temperature = data["temperature"]
-    // OpenCode uses Schema.Finite which rejects NaN, Infinity, and -Infinity.
-    if (typeof temperature === "number" && isFinite(temperature)) entry.temperature = temperature
+    const temperature = coerceFiniteNumber(data["temperature"])
+    if (temperature !== undefined) entry.temperature = temperature
 
-    const top_p = data["top_p"]
-    // Same finite constraint as temperature.
-    if (typeof top_p === "number" && isFinite(top_p)) entry.top_p = top_p
+    const top_p = coerceFiniteNumber(data["top_p"])
+    if (top_p !== undefined) entry.top_p = top_p
 
     const steps = data["steps"]
     if (typeof steps === "number" && Number.isInteger(steps) && steps > 0) entry.steps = steps
