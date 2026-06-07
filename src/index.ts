@@ -3,8 +3,6 @@ import type { Plugin, PluginModule } from "@opencode-ai/plugin"
 import { parseBridgeConfig } from "./config.js"
 import { injectCommandsAndAgents } from "./inject.js"
 import { injectSkills, patchNativeSkillVars, readSkillPaths } from "./skill-inject.js"
-import { injectMcp } from "./mcp-inject.js"
-import { injectLsp } from "./lsp-inject.js"
 import { createLogger } from "./logger.js"
 import { listClaudePlugins, selectEnabledPlugins } from "./selection.js"
 import { collectExistingSkillNames } from "./skill-scan.js"
@@ -44,8 +42,7 @@ export function parseBooleanEnv(value: string | undefined): boolean {
  * (`["opencode-claude-bridge", { ...options }]`) and are captured in the `config` hook's
  * closure — the hook signature carries only the config object (verified against the
  * OpenCode source). The hook resolves the set of enabled Claude plugins and injects
- * their commands, agents, skills, and (opt-in) MCP and LSP servers into the shared,
- * mutable config.
+ * their commands, agents, and skills into the shared, mutable config.
  */
 export const server: Plugin = async (_input, options) => {
   const { config: bridge, warnings } = parseBridgeConfig(options)
@@ -111,20 +108,12 @@ export const server: Plugin = async (_input, options) => {
           commandAllocator,
         }, logger)
 
-        // §6.4 MCP — cfg.mcp injection (opt-in via allowMcp).
-        const mcpSummary = await injectMcp(selected, cfg, bridge.allowMcp, logger)
-
-        // §6.5 LSP — cfg.lsp injection (opt-in via allowLsp; respects cfg.lsp === false).
-        const lspSummary = await injectLsp(selected, cfg, bridge.allowLsp, logger)
-
         // §10 concise per-run summary.
-        const renamed = cmdAgentSummary.renamed + skillSummary.renamed + mcpSummary.renamed + lspSummary.renamed
+        const renamed = cmdAgentSummary.renamed + skillSummary.renamed
         const summaryParts: string[] = [
-          `injected ${cmdAgentSummary.commands + skillSummary.commandsAdded} command(s), ${cmdAgentSummary.agents} agent(s), ${skillSummary.skills} skill(s), ${mcpSummary.servers} MCP server(s), ${lspSummary.servers} LSP server(s)`,
+          `injected ${cmdAgentSummary.commands + skillSummary.commandsAdded} command(s), ${cmdAgentSummary.agents} agent(s), ${skillSummary.skills} skill(s)`,
         ]
         if (renamed > 0) summaryParts.push(`renamed ${renamed} (collision)`)
-        if (mcpSummary.skippedPolicy > 0) summaryParts.push(`skipped ${mcpSummary.skippedPolicy} MCP (policy)`)
-        if (lspSummary.skippedPolicy > 0) summaryParts.push(`skipped ${lspSummary.skippedPolicy} LSP (policy)`)
         logger.info(summaryParts.join("; "))
       } catch (err) {
         // Strict mode: surface a hard failure. Non-strict: the hook must never throw,

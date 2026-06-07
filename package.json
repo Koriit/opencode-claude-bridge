@@ -1,7 +1,7 @@
 {
   "name": "@koriit/opencode-claude-bridge",
-  "version": "0.1.20",
-  "description": "An OpenCode plugin that bridges enabled Claude Code plugins (commands, agents, skills, MCP, LSP) into OpenCode at runtime, namespaced so they never shadow your existing items.",
+  "version": "0.2.0",
+  "description": "An OpenCode plugin that bridges enabled Claude Code plugins (commands, agents, skills) into OpenCode at runtime, namespaced so they never shadow your existing items.",
   "type": "module",
   "license": "MIT",
   "main": "./src/index.ts",

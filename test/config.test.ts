@@ -36,16 +36,12 @@ describe("parseBridgeConfig", () => {
 
   test("honors the documented boolean and array keys", () => {
     const { config, warnings } = parseBridgeConfig({
-      allowMcp: true,
-      allowLsp: true,
       strict: true,
       blockedPlugins: ["a@mkt", "b@mkt"],
     })
     expect(warnings).toEqual([])
     expect(config).toEqual({
       mode: "mirror-claude",
-      allowMcp: true,
-      allowLsp: true,
       strict: true,
       blockedPlugins: ["a@mkt", "b@mkt"],
     })
@@ -63,11 +59,9 @@ describe("parseBridgeConfig", () => {
   })
 
   test("ill-typed booleans are dropped to defaults with a warning", () => {
-    const { config, warnings } = parseBridgeConfig({ allowMcp: "yes", strict: 1 })
-    expect(config.allowMcp).toBe(false)
+    const { config, warnings } = parseBridgeConfig({ strict: 1 })
     expect(config.strict).toBe(false)
-    expect(warnings).toHaveLength(2)
-    expect(warnings.some((w) => w.includes("allowMcp"))).toBe(true)
+    expect(warnings).toHaveLength(1)
     expect(warnings.some((w) => w.includes("strict"))).toBe(true)
   })
 
@@ -84,8 +78,8 @@ describe("parseBridgeConfig", () => {
   })
 
   test("unknown keys are reported and ignored", () => {
-    const { config, warnings } = parseBridgeConfig({ allowMcp: true, bogus: 1, mode2: "x" })
-    expect(config.allowMcp).toBe(true)
+    const { config, warnings } = parseBridgeConfig({ strict: true, bogus: 1, mode2: "x" })
+    expect(config.strict).toBe(true)
     expect(warnings.filter((w) => w.includes("unknown option"))).toHaveLength(2)
   })
 })

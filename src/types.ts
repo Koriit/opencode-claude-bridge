@@ -6,10 +6,6 @@
 export interface BridgeConfig {
   /** The only accepted mode: mirror exactly the Claude plugins Claude reports as enabled. */
   mode: "mirror-claude"
-  /** Inject MCP servers from plugins (global on/off). Safe-by-default off. */
-  allowMcp: boolean
-  /** Inject LSP servers from plugins (global on/off). Safe-by-default off. */
-  allowLsp: boolean
   /** Plugin ids (`name@marketplace`) to never inject. */
   blockedPlugins: string[]
   /** Promote soft warnings (parse failures, missing CLI) to hard errors. */
@@ -18,8 +14,6 @@ export interface BridgeConfig {
 
 export const DEFAULT_BRIDGE_CONFIG: BridgeConfig = {
   mode: "mirror-claude",
-  allowMcp: false,
-  allowLsp: false,
   blockedPlugins: [],
   strict: false,
 }

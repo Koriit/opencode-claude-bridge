@@ -11,7 +11,7 @@ export interface ParsedBridgeConfig {
   warnings: string[]
 }
 
-const DOCUMENTED_KEYS = new Set(["mode", "allowMcp", "allowLsp", "blockedPlugins", "strict"])
+const DOCUMENTED_KEYS = new Set(["mode", "blockedPlugins", "strict"])
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -48,7 +48,7 @@ export function parseBridgeConfig(options: unknown): ParsedBridgeConfig {
     // mode is effectively hardcoded; nothing to assign beyond the default.
   }
 
-  for (const key of ["allowMcp", "allowLsp", "strict"] as const) {
+  for (const key of ["strict"] as const) {
     if (key in options) {
       const value = options[key]
       if (typeof value === "boolean") {

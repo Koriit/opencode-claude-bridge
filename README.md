@@ -4,9 +4,8 @@
 > second install.
 
 If you already manage plugins with `claude plugin install`, this bridge makes their **commands,
-agents, and skills** (and, opt-in, their **MCP** and **LSP** servers) available in OpenCode too. It
-reads Claude's enabled-plugin state at OpenCode launch and injects the components live, namespaced
-so they never shadow anything you already have.
+agents, and skills** available in OpenCode too. It reads Claude's enabled-plugin state at OpenCode
+launch and injects the components live, namespaced so they never shadow anything you already have.
 
 It is a single plugin — no wrapper binary, no generated files, no lockfile. You run plain
 `opencode`; the bridge reads `claude plugin list --json` and injects the components on each launch.
@@ -22,8 +21,19 @@ skills are already there — `/audit`, the `reviewer` subagent, and so on. Nothi
 name is already taken by one of your own items, the bridge's copy is renamed (e.g.
 `/code-tools-audit`) — your item is never touched.
 
-> **Status: early development.** Commands, agents, skills, MCP, and LSP servers from enabled Claude
-> plugins are all supported. MCP and LSP are opt-in and off by default.
+> **Status: early development.** Commands, agents, and skills from enabled Claude plugins are
+> supported.
+>
+> **MCP and LSP servers are not supported.** Two problems make a straight bridge unreliable:
+>
+> 1. **OAuth client mismatch.** A plugin's `.mcp.json` OAuth registration is tied to Claude's OAuth
+>    client — those credentials don't carry over to OpenCode, which authenticates as its own client.
+>    Copying the config across does not produce a working authenticated server.
+> 2. **Claude-specific porting.** MCP/LSP servers ship with Claude-specific setup and porting
+>    instructions that don't translate cleanly to OpenCode, so injecting the raw `.mcp.json` /
+>    `.lsp.json` is not enough to make them work.
+>
+> The feature has been removed for now. Track this in the project issues if you need it.
 
 ## Contents
 
@@ -36,8 +46,6 @@ name is already taken by one of your own items, the bridge's copy is renamed (e.
   - [No-shadowing & naming](#no-shadowing--naming)
   - [Skills: no-copy in the common case, bridge cache on collision](#skills-no-copy-in-the-common-case-bridge-cache-on-collision)
   - [Variable substitution](#variable-substitution)
-  - [MCP servers (opt-in)](#mcp-servers-opt-in)
-  - [LSP servers (opt-in)](#lsp-servers-opt-in)
   - [Security model](#security-model)
   - [Why the version is pinned](#why-the-version-is-pinned)
   - [Schema-safety invariant](#schema-safety-invariant)
@@ -76,8 +84,6 @@ The tuple form lets you set options (all shown here at their defaults):
     [
       "@koriit/opencode-claude-bridge",
       {
-        "allowMcp": false,
-        "allowLsp": false,
         "blockedPlugins": []
       }
     ]
@@ -96,8 +102,6 @@ All keys are optional. Unknown keys and ill-typed values are ignored with a warn
 
 | Key              | Type       | Default         | Meaning                                                                |
 | ---------------- | ---------- | --------------- | ---------------------------------------------------------------------- |
-| `allowMcp`       | boolean    | `false`         | Inject MCP servers from plugins (global on/off).                       |
-| `allowLsp`       | boolean    | `false`         | Inject LSP servers from plugins (global on/off).                       |
 | `blockedPlugins` | `string[]` | `[]`            | Plugin ids (`name@marketplace`) to never inject — any component type.  |
 | `strict`         | boolean    | `false`         | Promote warnings (parse failures, missing CLI) to hard errors.         |
 | `mode`           | `string`   | `mirror-claude` | The only accepted mode: mirror exactly Claude's enabled set.           |
@@ -119,20 +123,20 @@ The bridge runs in `mirror-claude` mode (the only mode). A Claude plugin is brid
 | Commands  | On      | `commands/**/*.md` → `cfg.command`; `$ARGUMENTS` / `$1..n` pass through.                                                                                                                                                                                                                                                       |
 | Agents    | On      | `agents/*.md` → `cfg.agent`; uses the `prompt` field; `mode` defaults to `subagent` (also `primary`/`all`); `temperature`, `top_p`, `steps`, `hidden`, `color`, `variant` pass through (sanitized).                                                                                                                            |
 | Skills    | On      | `skills/<name>/SKILL.md` dirs → `cfg.skills.paths` **and** `cfg.command` by default (see [dual routing](#skills-no-copy-in-the-common-case-bridge-cache-on-collision) below); `user-invocable: false` → skill only; `disable-model-invocation: true` → command only; both set → skipped. Zero files copied in the common case. |
-| MCP       | Opt-in  | `allowMcp: true`. Source: `<installPath>/.mcp.json`. Claude `type:"http"` → OpenCode `type:"remote"`; stdio/command → `type:"local"`.                                                                                                                                                                                          |
-| LSP       | Opt-in  | `allowLsp: true`. Source: `<installPath>/.lsp.json`. Respects `cfg.lsp === false`.                                                                                                                                                                                                                                             |
 
-Commands, agents, and skills are plain text prompts and are always bridged. MCP and LSP servers
-**spawn processes** and can open network connections, so they are gated behind the explicit
-`allowMcp` / `allowLsp` toggles — see [Security model](#security-model).
+Commands, agents, and skills are plain text prompts and are always bridged.
+
+> **MCP and LSP servers are not bridged.** See the [status note](#opencode-claude-bridge) above —
+> Claude's MCP OAuth client doesn't carry over to OpenCode, and the servers need Claude-specific
+> porting that doesn't translate, so the feature was removed.
 
 ---
 
 ## How it works (internals)
 
 This section is reference material for maintainers and the curious — you don't need it to use the
-bridge. It documents the naming rules, the skills cache, variable substitution, the MCP/LSP
-mappings, and the OpenCode-internal behavior the bridge depends on.
+bridge. It documents the naming rules, the skills cache, variable substitution, and the
+OpenCode-internal behavior the bridge depends on.
 
 ### No-shadowing & naming
 
@@ -181,8 +185,8 @@ The bridge resolves these variables in injected content before OpenCode sees it.
 
 | Variable                | Resolves to                                                                                                                                                                          | Available in                                         |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| `${CLAUDE_PLUGIN_ROOT}` | Plugin resolved on-disk install directory — the `installPath` from `claude plugin list --json`; in current Claude that is `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>` | Commands, agents, skills (body + SKILL.md), MCP, LSP |
-| `${CLAUDE_PLUGIN_DATA}` | Plugin persistent data dir — `~/.claude/plugins/data/<sanitized-id>`                                                                                                                 | Commands, agents, skills (body + SKILL.md), MCP, LSP |
+| `${CLAUDE_PLUGIN_ROOT}` | Plugin resolved on-disk install directory — the `installPath` from `claude plugin list --json`; in current Claude that is `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>` | Commands, agents, skills (body + SKILL.md)           |
+| `${CLAUDE_PLUGIN_DATA}` | Plugin persistent data dir — `~/.claude/plugins/data/<sanitized-id>`                                                                                                                 | Commands, agents, skills (body + SKILL.md)           |
 | `${CLAUDE_SKILL_DIR}`   | Skill source directory (dirname of `SKILL.md`)                                                                                                                                       | Plugin skills only (body + SKILL.md)                 |
 | `${CLAUDE_SESSION_ID}`  | The literal `<use Session ID from context>` (see note)                                                                                                                               | Commands, agents, skills (body + SKILL.md)           |
 
@@ -198,54 +202,15 @@ The bridge resolves these variables in injected content before OpenCode sees it.
 > `experimental.chat.system.transform` hook, making the current ID available whenever the model
 > needs it.
 
-### MCP servers (opt-in)
-
-When `allowMcp: true`, the bridge reads each enabled plugin's top-level `.mcp.json` and injects the
-declared servers into OpenCode's flat `cfg.mcp` record:
-
-- Claude `type:"http"` → OpenCode `{ type:"remote", url, headers?, oauth? }`
-- Claude stdio/command servers → OpenCode `{ type:"local", command:[cmd, ...args], environment? }`
-- All string fields support [variable substitution](#variable-substitution).
-- OAuth field names (`clientId`, `callbackPort`, etc.) are identical between Claude and OpenCode.
-
-**Name:** `<plugin>-<server>` (e.g. plugin `slack@official` with server `slack` → `slack-slack`),
-with the same no-shadowing + collision-rename ladder. Because MCP servers spawn external processes
-and can open network connections, they are off by default.
-
-### LSP servers (opt-in)
-
-When `allowLsp: true`, the bridge reads each enabled plugin's top-level `.lsp.json` and injects the
-declared servers into `cfg.lsp`:
-
-- Claude `command` (string) + `args` (array) → OpenCode `command` (string array)
-- Claude `extensionToLanguage` keys (e.g. `{ ".rs": "rust" }`) → OpenCode `extensions` array
-- `env`, `initializationOptions` (falling back to `settings`) → `env`, `initialization` (only one is
-  used; `initializationOptions` takes precedence — they do not merge)
-- All string fields support [variable substitution](#variable-substitution).
-- Servers with no `.`-prefixed keys in `extensionToLanguage`, or with `transport: "socket"`, are
-  skipped with a warning (OpenCode requires `extensions` for custom LSP servers and has no socket
-  transport support).
-
-**`cfg.lsp === false` is respected.** If you explicitly set `lsp: false` in your `opencode.json`, the
-bridge injects no LSP servers — but commands, agents, skills, and MCP still inject normally.
-
-**Name:** `<plugin>-<server>`, same collision-rename ladder. Off by default (spawns processes).
-
-> **LSP source note:** the `.lsp.json` convention is derived from Claude Code's plugin-loader
-> source. No real installed Claude LSP plugin with a `.lsp.json` was available to validate against at
-> implementation time; validate against a live LSP plugin if you enable this feature.
-
 ### Security model
 
 - Commands, agents, and skills are text prompts (lower risk) and are always bridged — but always
   namespaced so they can never shadow your own items.
-- MCP and LSP servers spawn processes / open connections, so they are gated behind `allowMcp` /
-  `allowLsp`, both **off by default**.
-- The `allowMcp` / `allowLsp` toggles are all-or-nothing per type — there is no per-plugin trust
-  level.
-- `blockedPlugins` hard-excludes plugin ids from **all** bridge injection (commands, agents, skills,
-  MCP, LSP). It governs what the bridge injects; it cannot suppress commands that OpenCode's own
-  native Claude-plugin integration may load independently of the bridge.
+- MCP and LSP servers (which would spawn processes / open connections) are **not bridged** — see the
+  [status note](#opencode-claude-bridge).
+- `blockedPlugins` hard-excludes plugin ids from **all** bridge injection (commands, agents,
+  skills). It governs what the bridge injects; it cannot suppress commands that OpenCode's own native
+  Claude-plugin integration may load independently of the bridge.
 - Disabled plugins are always skipped.
 
 ### Why the version is pinned
@@ -255,8 +220,8 @@ bridge injects no LSP servers — but commands, agents, skills, and MCP still in
 ```
 
 Verified against **OpenCode 1.15.13**. The bridge relies on OpenCode-internal behavior that is not a
-documented public contract (config hook shape, `cfg.mcp`/`cfg.lsp`/`cfg.skills` object layout, skill
-discovery paths), so it pins a conservative same-minor window.
+documented public contract (config hook shape, `cfg.skills` object layout, skill discovery paths), so
+it pins a conservative same-minor window.
 
 This range is **documentation only** — the bridge does NOT read the running OpenCode version and does
 NOT warn at runtime. It relies on OpenCode-internal behavior verified against the version above and
@@ -270,8 +235,7 @@ before write — never raw passthrough. This is not cosmetic: OpenCode validates
 when the TUI issues `config.get` at startup, **outside** the bridge's `config` hook try/catch. A
 Claude field that violates OpenCode's schema would therefore not be caught by the bridge's non-throw
 guard — it would crash the whole instance later. Injecting nothing is always safer than injecting an
-invalid value. (Known cases handled: agent `color` name → hex mapping, finite `temperature`/`top_p`,
-integer MCP `callbackPort`.)
+invalid value. (Known cases handled: agent `color` name → hex mapping, finite `temperature`/`top_p`.)
 
 ## Diagnostics
 

@@ -445,7 +445,7 @@ describe("bridge e2e — skill injection", () => {
 
   test("injection summary includes skill count", () => {
     expect(
-      server!.logHas("injected 1 command(s), 0 agent(s), 1 skill(s), 0 MCP server(s), 0 LSP server(s)"),
+      server!.logHas("injected 1 command(s), 0 agent(s), 1 skill(s)"),
     ).toBe(true)
   })
 })
@@ -572,7 +572,7 @@ describe("bridge e2e — disabled plugin contributes no skills", () => {
 
   test("injection summary shows 0 skills injected", () => {
     expect(
-      server!.logHas("injected 0 command(s), 0 agent(s), 0 skill(s), 0 MCP server(s), 0 LSP server(s)"),
+      server!.logHas("injected 0 command(s), 0 agent(s), 0 skill(s)"),
     ).toBe(true)
   })
 })

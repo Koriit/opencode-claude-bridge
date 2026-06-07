@@ -9,8 +9,8 @@ import path from "node:path"
  * deterministic and independent of the machine's actual Claude state), trigger the config hook,
  * and inspect both the live HTTP API and the bridge's log output.
  *
- * Later milestones reuse `startBridge` to assert injected commands/agents/skills/MCP/LSP appear
- * in `/command`, `/agent`, `/skill`, `/mcp` against the same real server.
+ * Later milestones reuse `startBridge` to assert injected commands/agents/skills appear
+ * in `/command`, `/agent`, `/skill` against the same real server.
  */
 
 /** Absolute path to the bridge plugin entry (TS source — OpenCode/Bun imports it directly). */
