@@ -4,7 +4,7 @@ import { parseBridgeConfig } from "./config.js"
 import { injectCommandsAndAgents } from "./inject.js"
 import { injectSkills, patchNativeSkillVars, readSkillPaths } from "./skill-inject.js"
 import { createLogger } from "./logger.js"
-import { listClaudePlugins, selectEnabledPlugins } from "./selection.js"
+import { listClaudePlugins, selectEnabledPlugins, supplementFromSettings } from "./selection.js"
 import { collectExistingSkillNames } from "./skill-scan.js"
 
 /**
@@ -66,8 +66,12 @@ export const server: Plugin = async (_input, options) => {
         for (const w of warnings) logger.warn(w)
 
         // §5 mirror-claude resolution.
-        const all = await listClaudePlugins(_input.$, logger)
-        if (all === null) return // CLI missing/failed — already warned; inject nothing.
+        const cliPlugins = await listClaudePlugins(_input.$, logger)
+        if (cliPlugins === null) return // CLI missing/failed — already warned; inject nothing.
+
+        // Supplement with plugins enabled via settings.json but absent from the CLI output
+        // (e.g. manually edited settings.json without going through `claude plugin add`).
+        const all = await supplementFromSettings(cliPlugins, _input.directory, logger)
 
         const selected = selectEnabledPlugins(all, bridge, _input.directory)
         const ids = selected.map((p) => p.id).join(", ")

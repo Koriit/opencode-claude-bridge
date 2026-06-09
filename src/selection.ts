@@ -1,11 +1,220 @@
 import fs from "node:fs"
+import fsPromises from "node:fs/promises"
 import path from "node:path"
+import os from "node:os"
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { Logger } from "./logger.js"
 import { type BridgeConfig, type ClaudePlugin } from "./types.js"
 
 /** The Bun shell handle provided to plugins (`input.$`); not exported by name from the package. */
 type BunShell = PluginInput["$"]
+
+// ── settings.json supplement ──────────────────────────────────────────────────
+
+/**
+ * Read the `enabledPlugins` map from a single `settings.json` file. Returns an
+ * empty object when the file is absent, unreadable, or has no `enabledPlugins`.
+ */
+async function readEnabledPlugins(settingsPath: string): Promise<Record<string, boolean>> {
+  let raw: string
+  try {
+    raw = await fsPromises.readFile(settingsPath, "utf8")
+  } catch {
+    return {}
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return {}
+  }
+  if (typeof parsed !== "object" || parsed === null) return {}
+  const ep = (parsed as Record<string, unknown>)["enabledPlugins"]
+  if (typeof ep !== "object" || ep === null) return {}
+  // Filter to only string→boolean entries.
+  const result: Record<string, boolean> = {}
+  for (const [k, v] of Object.entries(ep)) {
+    if (typeof v === "boolean") result[k] = v
+  }
+  return result
+}
+
+/**
+ * Return the `installLocation` for a marketplace name by reading
+ * `~/.claude/plugins/known_marketplaces.json`. Returns `undefined` when the
+ * file is absent or the marketplace name is not found.
+ */
+async function resolveMarketplaceInstallLocation(
+  home: string,
+  marketplace: string,
+): Promise<string | undefined> {
+  const knownPath = path.join(home, ".claude", "plugins", "known_marketplaces.json")
+  let raw: string
+  try {
+    raw = await fsPromises.readFile(knownPath, "utf8")
+  } catch {
+    return undefined
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined
+  const entry = (parsed as Record<string, unknown>)[marketplace]
+  if (typeof entry !== "object" || entry === null) return undefined
+  const loc = (entry as Record<string, unknown>)["installLocation"]
+  return typeof loc === "string" ? loc : undefined
+}
+
+/**
+ * Find the latest cached version directory for a plugin under
+ * `~/.claude/plugins/cache/<marketplace>/<pluginName>/`. Returns `undefined` when
+ * the directory is absent or has no version subdirectories.
+ *
+ * "Latest" is determined by `lastUpdated` from `installed_plugins.json` when
+ * available; otherwise falls back to lexical sort of directory names (last wins).
+ */
+async function resolveLatestCachedInstallPath(
+  home: string,
+  marketplace: string,
+  pluginName: string,
+  pluginId: string,
+): Promise<{ installPath: string; version: string } | undefined> {
+  // First try the standard cache location.
+  const cacheDir = path.join(home, ".claude", "plugins", "cache", marketplace, pluginName)
+  let entries: fs.Dirent[]
+  try {
+    entries = await fsPromises.readdir(cacheDir, { withFileTypes: true })
+  } catch {
+    return undefined
+  }
+
+  const versionDirs = entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+    .map((e) => e.name)
+
+  if (versionDirs.length === 0) return undefined
+
+  // Prefer the version recorded in installed_plugins.json for this id (most reliable).
+  const installedPath = path.join(home, ".claude", "plugins", "installed_plugins.json")
+  try {
+    const raw = await fsPromises.readFile(installedPath, "utf8")
+    const data = JSON.parse(raw) as { plugins?: Record<string, Array<{ version: string; installPath: string; lastUpdated?: string }>> }
+    const entries = data.plugins?.[pluginId]
+    if (Array.isArray(entries) && entries.length > 0) {
+      // Pick the entry with the most recent lastUpdated.
+      const best = entries.reduce((a, b) =>
+        (a.lastUpdated ?? "") >= (b.lastUpdated ?? "") ? a : b
+      )
+      if (best.installPath && fs.existsSync(best.installPath)) {
+        return { installPath: best.installPath, version: best.version }
+      }
+    }
+  } catch {
+    // fall through to lexical sort
+  }
+
+  // Fall back: lexical sort, last entry wins (highest semver-ish string).
+  const version = versionDirs.sort().at(-1)!
+  return { installPath: path.join(cacheDir, version), version }
+}
+
+/**
+ * Supplement the list returned by `claude plugin list --json` with any plugins
+ * that appear as `enabledPlugins: true` in `settings.json` files (global and
+ * project-level) but are absent from `cliPlugins`.
+ *
+ * This handles the case where a user manually edits `settings.json` to enable a
+ * plugin without going through `claude plugin add` — the plugin is used by Claude
+ * but never registered in `installed_plugins.json`, so it never appears in the
+ * CLI output.
+ *
+ * For each missing id the function:
+ *   1. Derives the marketplace name from the `name@marketplace` id format.
+ *   2. Looks up the marketplace's `installLocation` via `known_marketplaces.json`.
+ *   3. Finds the latest cached version under the standard cache path or the
+ *      marketplace's `installLocation`.
+ *   4. Synthesizes a `ClaudePlugin` entry and appends it to the list.
+ *
+ * Plugins that cannot be resolved (no cache, unknown marketplace) are skipped
+ * with a debug-level log — not a warning, because a manually edited settings.json
+ * may reference plugins not yet downloaded.
+ */
+export async function supplementFromSettings(
+  cliPlugins: ClaudePlugin[],
+  cwd: string,
+  logger: Logger,
+): Promise<ClaudePlugin[]> {
+  const home = os.homedir()
+  const cliIds = new Set(cliPlugins.map((p) => p.id))
+  const extra: ClaudePlugin[] = []
+
+  // Collect enabledPlugins from global + project settings.json files.
+  const settingsPaths = [
+    path.join(home, ".claude", "settings.json"),
+    path.join(cwd, ".claude", "settings.json"),
+  ]
+
+  const enabledById: Record<string, { enabled: boolean; scope: "user" | "project" }> = {}
+  for (const [i, sp] of settingsPaths.entries()) {
+    const scope = i === 0 ? "user" : "project"
+    const ep = await readEnabledPlugins(sp)
+    for (const [id, enabled] of Object.entries(ep)) {
+      if (enabled) enabledById[id] = { enabled, scope }
+    }
+  }
+
+  for (const [id, { scope }] of Object.entries(enabledById)) {
+    if (cliIds.has(id)) continue // already provided by claude plugin list
+
+    // Parse `name@marketplace` — the last `@` segment is the marketplace.
+    const atIdx = id.lastIndexOf("@")
+    if (atIdx < 1) {
+      logger.info(`settings.json enabledPlugins: skipping malformed id "${id}" (no @marketplace suffix)`)
+      continue
+    }
+    const pluginName = id.slice(0, atIdx)
+    const marketplace = id.slice(atIdx + 1)
+
+    // Try to resolve the install path.
+    const resolved = await resolveLatestCachedInstallPath(home, marketplace, pluginName, id)
+    if (!resolved) {
+      // Try marketplace installLocation as a fallback (directory-source marketplaces).
+      const installLocation = await resolveMarketplaceInstallLocation(home, marketplace)
+      if (installLocation) {
+        const marketplacePath = path.join(installLocation, "plugins", pluginName)
+        if (fs.existsSync(marketplacePath)) {
+          logger.info(`settings.json supplement: resolved "${id}" via marketplace installLocation`)
+          extra.push({
+            id,
+            version: "unknown",
+            scope,
+            enabled: true,
+            installPath: marketplacePath,
+            projectPath: scope === "project" ? cwd : null,
+          })
+          continue
+        }
+      }
+      logger.info(`settings.json supplement: could not resolve installPath for "${id}"; skipping`)
+      continue
+    }
+
+    logger.info(`settings.json supplement: resolved "${id}" @ ${resolved.version} (not in claude plugin list)`)
+    extra.push({
+      id,
+      version: resolved.version,
+      scope,
+      enabled: true,
+      installPath: resolved.installPath,
+      projectPath: scope === "project" ? cwd : null,
+    })
+  }
+
+  return [...cliPlugins, ...extra]
+}
 
 /** Minimal duck-type guard for one `claude plugin list --json` entry. */
 function isClaudePlugin(value: unknown): value is ClaudePlugin {
