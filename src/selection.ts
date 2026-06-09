@@ -146,8 +146,8 @@ export async function supplementFromSettings(
   cliPlugins: ClaudePlugin[],
   cwd: string,
   logger: Logger,
+  home: string = os.homedir(),
 ): Promise<ClaudePlugin[]> {
-  const home = os.homedir()
   const cliIds = new Set(cliPlugins.map((p) => p.id))
   const extra: ClaudePlugin[] = []
 
