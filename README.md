@@ -8,7 +8,8 @@ agents, and skills** available in OpenCode too. It reads Claude's enabled-plugin
 launch and injects the components live, namespaced so they never shadow anything you already have.
 
 It is a single plugin — no wrapper binary, no generated files, no lockfile. You run plain
-`opencode`; the bridge reads `claude plugin list --json` and injects the components on each launch.
+`opencode`; the bridge reads Claude's own settings to determine which plugins are enabled, resolves
+each one's on-disk location, and injects the components on each launch.
 
 **Example.** You install a plugin in Claude:
 
@@ -39,6 +40,7 @@ name is already taken by one of your own items, the bridge's copy is renamed (e.
 
 - [Requirements](#requirements)
 - [Install](#install)
+- [Updating](#updating)
 - [Configuration](#configuration)
   - [What gets bridged](#what-gets-bridged)
   - [What gets injected](#what-gets-injected)
@@ -57,9 +59,10 @@ name is already taken by one of your own items, the bridge's copy is renamed (e.
 ## Requirements
 
 - **OpenCode** `>=1.15.0 <1.16.0` (see [Why the version is pinned](#why-the-version-is-pinned)).
-- The **`claude` CLI** on your `PATH` at OpenCode runtime. Reading Claude's plugin state is the
-  bridge's entire job; if `claude` is missing, the bridge logs a warning and injects nothing —
-  OpenCode still starts normally.
+- The **`claude` CLI** on your `PATH` at OpenCode runtime. The bridge calls
+  `claude plugin marketplace list --json` to resolve where each marketplace is installed on disk. If
+  `claude` is missing the bridge logs a warning and falls back to whatever it can resolve from your
+  settings files alone; OpenCode still starts normally.
 
 > **Windows is best-effort only.** The bridge is developed and tested on Linux/macOS. Core features
 > (commands, agents, skills) should work, but path handling and `${CLAUDE_PLUGIN_ROOT}` /
@@ -96,25 +99,57 @@ runs — the package entry points at `src/index.ts` on purpose, and OpenCode's B
 TypeScript directly. The bridge has zero runtime dependencies (every `@opencode-ai/plugin` import is
 `import type`, erased at runtime).
 
+## Updating
+
+OpenCode resolves the bare `@koriit/opencode-claude-bridge` spec to `@latest` and then **caches the
+resolved package**, so a new release on npm is not picked up automatically. To force an update, clear
+the bridge's entry from OpenCode's package cache and restart:
+
+```bash
+rm -rf ~/.cache/opencode/packages/@koriit/opencode-claude-bridge@latest
+```
+
+On the next launch OpenCode re-fetches the latest published version. (If you pinned a specific
+version in your config — e.g. `@koriit/opencode-claude-bridge@0.3.0` — bump that version string
+instead; the cache key includes the version.)
+
+> The path above is the per-package cache directory OpenCode creates for npm plugins
+> (`~/.cache/opencode/packages/<sanitized-spec>/`). Removing it is safe — it is regenerated on the
+> next start.
+
 ## Configuration
 
 All keys are optional. Unknown keys and ill-typed values are ignored with a warning.
 
-| Key              | Type       | Default         | Meaning                                                                |
-| ---------------- | ---------- | --------------- | ---------------------------------------------------------------------- |
-| `blockedPlugins` | `string[]` | `[]`            | Plugin ids (`name@marketplace`) to never inject — any component type.  |
-| `strict`         | boolean    | `false`         | Promote warnings (parse failures, missing CLI) to hard errors.         |
-| `mode`           | `string`   | `mirror-claude` | The only accepted mode: mirror exactly Claude's enabled set.           |
+| Key              | Type       | Default         | Meaning                                                                                                                                                      |
+| ---------------- | ---------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `blockedPlugins` | `string[]` | `[]`            | Plugin ids (`name@marketplace`) to never inject — any component type.                                                                                        |
+| `strict`         | boolean    | `false`         | Promote fatal warnings (e.g. parse failures) to hard errors. A missing or failing `claude` CLI is non-fatal — the bridge resolves from settings files alone. |
+| `mode`           | `string`   | `mirror-claude` | The only accepted mode: mirror exactly Claude's enabled set.                                                                                                 |
 
 ### What gets bridged
 
-The bridge runs in `mirror-claude` mode (the only mode). A Claude plugin is bridged when
-`claude plugin list --json` reports it as **enabled** *and* it is in scope for the current project:
+The bridge runs in `mirror-claude` mode (the only mode). It determines the enabled set exactly the
+way Claude Code does — by merging the `enabledPlugins` maps from Claude's settings layers, in
+precedence order (later layers override earlier ones):
 
-- `user`-scoped plugins always apply (they are global).
-- `project`/`local`-scoped plugins apply only when their project matches your current directory.
+1. `~/.claude/settings.json` (global / `user` scope)
+2. `<project>/.claude/settings.json` (project scope)
+3. `<project>/.claude/settings.local.json` (project scope)
+
+A plugin is bridged when its final merged value is `true`. This honors **both** ways of enabling a
+plugin in Claude: via the `claude plugin` CLI **and** by hand-editing `enabledPlugins` in a
+`settings.json`. (Relying on `claude plugin list --json` alone would miss the hand-edited case — it
+only reports plugins installed through the CLI.)
+
+- A later `enabledPlugins` layer setting `false` disables a plugin an earlier layer enabled.
 - ids listed in `blockedPlugins` are never bridged.
-- Disabled plugins (`enabled: false`) are always skipped.
+
+Once a plugin is enabled, its on-disk location is resolved from the marketplace manifest
+(`claude plugin marketplace list --json` → `<installLocation>/.claude-plugin/marketplace.json`),
+falling back to the `claude plugin list --json` entry's `installPath` for sources the manifest cannot
+resolve directly (e.g. git-subdir plugins). Plugins whose location cannot be resolved by either method
+are skipped with a log line.
 
 ### What gets injected
 
@@ -183,12 +218,12 @@ before starting OpenCode) — useful in CI or test environments.
 
 The bridge resolves these variables in injected content before OpenCode sees it.
 
-| Variable                | Resolves to                                                                                                                                                                          | Available in                                         |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| `${CLAUDE_PLUGIN_ROOT}` | Plugin resolved on-disk install directory — the `installPath` from `claude plugin list --json`; in current Claude that is `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>` | Commands, agents, skills (body + SKILL.md)           |
-| `${CLAUDE_PLUGIN_DATA}` | Plugin persistent data dir — `~/.claude/plugins/data/<sanitized-id>`                                                                                                                 | Commands, agents, skills (body + SKILL.md)           |
-| `${CLAUDE_SKILL_DIR}`   | Skill source directory (dirname of `SKILL.md`)                                                                                                                                       | Plugin skills only (body + SKILL.md)                 |
-| `${CLAUDE_SESSION_ID}`  | The literal `<use Session ID from context>` (see note)                                                                                                                               | Commands, agents, skills (body + SKILL.md)           |
+| Variable                | Resolves to                                                                                                                                    | Available in                               |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `${CLAUDE_PLUGIN_ROOT}` | Plugin resolved on-disk install directory — resolved from the marketplace manifest (or the `claude plugin list --json` `installPath` fallback) | Commands, agents, skills (body + SKILL.md) |
+| `${CLAUDE_PLUGIN_DATA}` | Plugin persistent data dir — `~/.claude/plugins/data/<sanitized-id>`                                                                           | Commands, agents, skills (body + SKILL.md) |
+| `${CLAUDE_SKILL_DIR}`   | Skill source directory (dirname of `SKILL.md`)                                                                                                 | Plugin skills only (body + SKILL.md)       |
+| `${CLAUDE_SESSION_ID}`  | The literal `<use Session ID from context>` (see note)                                                                                         | Commands, agents, skills (body + SKILL.md) |
 
 `<sanitized-id>` is the plugin id with all characters outside `[a-zA-Z0-9_-]` replaced by `-`
 (e.g. `my-plugin@acme` → `my-plugin-acme`).

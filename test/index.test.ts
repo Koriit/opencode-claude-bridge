@@ -43,9 +43,9 @@ function fakeClient(): PluginInput["client"] {
   return { app: { log: async () => ({ data: true }) } } as unknown as PluginInput["client"]
 }
 
-// ── Malformed plugin entry ────────────────────────────────────────────────────
+// ── CLI / resolution robustness ───────────────────────────────────────────────
 
-describe("opencode-claude-bridge hook — malformed plugin entry handling", () => {
+describe("opencode-claude-bridge hook — resolution robustness", () => {
   let tmpDir: string
 
   beforeEach(() => {
@@ -56,30 +56,35 @@ describe("opencode-claude-bridge hook — malformed plugin entry handling", () =
     rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  test("non-strict mode: malformed plugin entry warns but hook does not throw", async () => {
+  test("non-strict mode: malformed CLI output is tolerated and the hook does not throw", async () => {
     const { server } = await import("../src/index.js")
     const input = {
-      $: fakeShell(0, JSON.stringify([{ id: "bad" }])), // malformed entry → warns + skips
+      // Both `marketplace list` and `plugin list` return a malformed array entry;
+      // resolution skips them and injects nothing. With no enabledPlugins on disk
+      // there is nothing to inject anyway.
+      $: fakeShell(0, JSON.stringify([{ id: "bad" }])),
       directory: tmpDir,
       client: fakeClient(),
     } as unknown as PluginInput
 
     const mod = await server(input, undefined)
-    // Must resolve (not reject) in non-strict mode.
     await expect(mod!.config!({} as any)).resolves.toBeUndefined()
   })
 
-  test("strict mode: a fatal warning from a malformed plugin entry propagates as a hard error", async () => {
+  test("strict mode: malformed/absent CLI output is non-fatal (CLI is supplementary) — hook still resolves", async () => {
     const { server } = await import("../src/index.js")
     const input = {
-      $: fakeShell(0, JSON.stringify([{ id: "bad" }])), // malformed → warns → throws in strict
+      // `claude plugin list` is now a supplementary installPath source: a malformed
+      // or missing CLI is a non-fatal warning even in strict mode. With no
+      // enabledPlugins configured on disk, resolution yields nothing and the hook
+      // resolves cleanly.
+      $: fakeShell(0, JSON.stringify([{ id: "bad" }])),
       directory: tmpDir,
       client: fakeClient(),
     } as unknown as PluginInput
 
     const mod = await server(input, { strict: true })
-    // The config hook must reject in strict mode when a fatal warning fires.
-    await expect(mod!.config!({} as any)).rejects.toThrow()
+    await expect(mod!.config!({} as any)).resolves.toBeUndefined()
   })
 })
 

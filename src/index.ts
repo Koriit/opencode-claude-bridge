@@ -4,7 +4,7 @@ import { parseBridgeConfig } from "./config.js"
 import { injectCommandsAndAgents } from "./inject.js"
 import { injectSkills, patchNativeSkillVars, readSkillPaths } from "./skill-inject.js"
 import { createLogger } from "./logger.js"
-import { listClaudePlugins, selectEnabledPlugins, supplementFromSettings } from "./selection.js"
+import { resolveEnabledPlugins } from "./selection.js"
 import { collectExistingSkillNames } from "./skill-scan.js"
 
 /**
@@ -65,22 +65,17 @@ export const server: Plugin = async (_input, options) => {
         // Replay parse-time validation warnings (strict-promotable).
         for (const w of warnings) logger.warn(w)
 
-        // §5 mirror-claude resolution.
-        const cliPlugins = await listClaudePlugins(_input.$, logger)
-        if (cliPlugins === null) return // CLI missing/failed — already warned; inject nothing.
-
-        // Supplement with plugins enabled via settings.json but absent from the CLI output
-        // (e.g. manually edited settings.json without going through `claude plugin add`).
-        const all = await supplementFromSettings(cliPlugins, _input.directory, logger)
-
-        const selected = selectEnabledPlugins(all, bridge, _input.directory)
+        // §5 mirror-claude resolution: enablement comes from the merged settings
+        // layers (so hand-edited enabledPlugins are honored), installPath comes from
+        // the marketplace manifest with `claude plugin list` as a fallback.
+        const home = os.homedir()
+        const selected = await resolveEnabledPlugins(_input.$, bridge, _input.directory, logger, home)
         const ids = selected.map((p) => p.id).join(", ")
         logger.info(
           `resolved ${selected.length} enabled Claude plugin(s)${ids ? `: ${ids}` : ""}`,
         )
 
         // §6.1 commands, §6.2 agents — inline injection into the shared cfg.
-        const home = os.homedir()
         const cmdAgentSummary = await injectCommandsAndAgents(selected, cfg, home, logger)
         const { commandAllocator } = cmdAgentSummary
 

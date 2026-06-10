@@ -9,13 +9,37 @@ import { type BridgeConfig, type ClaudePlugin } from "./types.js"
 /** The Bun shell handle provided to plugins (`input.$`); not exported by name from the package. */
 type BunShell = PluginInput["$"]
 
-// ── settings.json supplement ──────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Plugin resolution overview
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Claude Code enables a plugin if it appears as `enabledPlugins[<id>] === true`
+// in ANY of its settings layers (global, project, project-local). Plugins can be
+// enabled two ways:
+//
+//   1. Via the `claude plugin` CLI (`claude plugin add ...`) — these are recorded
+//      in `~/.claude/plugins/installed_plugins.json` and surface in
+//      `claude plugin list --json` with a resolved `installPath`.
+//
+//   2. By hand-editing `enabledPlugins` in a `settings.json` — these are NOT
+//      recorded in `installed_plugins.json` and therefore NEVER appear in
+//      `claude plugin list --json`, even though Claude Code loads them fine.
+//
+// Depending solely on `claude plugin list --json` misses case (2). To mirror
+// Claude exactly we resolve enablement ourselves from the merged settings layers,
+// then resolve each enabled plugin's on-disk `installPath` via the marketplace
+// manifest (`claude plugin marketplace list --json` → `<installLocation>/.claude-plugin/marketplace.json`),
+// falling back to the `claude plugin list --json` entry when the manifest cannot
+// resolve a path (e.g. git-subdir sources cached in non-obvious locations).
+
+// ── Settings layers ───────────────────────────────────────────────────────────
 
 /**
- * Read the `enabledPlugins` map from a single `settings.json` file. Returns an
- * empty object when the file is absent, unreadable, or has no `enabledPlugins`.
+ * Read the `enabledPlugins` map from a single `settings.json`-style file. Returns
+ * an empty object when the file is absent, unreadable, not JSON, or has no
+ * `enabledPlugins` object. Only string→boolean entries are kept.
  */
-async function readEnabledPlugins(settingsPath: string): Promise<Record<string, boolean>> {
+export async function readEnabledPlugins(settingsPath: string): Promise<Record<string, boolean>> {
   let raw: string
   try {
     raw = await fsPromises.readFile(settingsPath, "utf8")
@@ -31,7 +55,6 @@ async function readEnabledPlugins(settingsPath: string): Promise<Record<string, 
   if (typeof parsed !== "object" || parsed === null) return {}
   const ep = (parsed as Record<string, unknown>)["enabledPlugins"]
   if (typeof ep !== "object" || ep === null) return {}
-  // Filter to only string→boolean entries.
   const result: Record<string, boolean> = {}
   for (const [k, v] of Object.entries(ep)) {
     if (typeof v === "boolean") result[k] = v
@@ -39,19 +62,129 @@ async function readEnabledPlugins(settingsPath: string): Promise<Record<string, 
   return result
 }
 
+/** One resolved enablement decision plus the scope it came from (for diagnostics). */
+interface EnablementDecision {
+  /** Final merged value; only `true` entries are injected. */
+  enabled: boolean
+  /** Which settings layer last set the value: `user` (global) or `project`. */
+  scope: "user" | "project"
+}
+
 /**
- * Return the `installLocation` for a marketplace name by reading
- * `~/.claude/plugins/known_marketplaces.json`. Returns `undefined` when the
- * file is absent or the marketplace name is not found.
+ * Merge `enabledPlugins` across the settings layers Claude reads, in precedence
+ * order (later layers override earlier ones):
+ *
+ *   1. `<home>/.claude/settings.json`            (scope: user)
+ *   2. `<cwd>/.claude/settings.json`             (scope: project)
+ *   3. `<cwd>/.claude/settings.local.json`       (scope: project)
+ *
+ * Returns a map of id → { enabled, scope }. A later `false` correctly overrides
+ * an earlier `true` (and vice versa), matching Claude's behavior.
  */
-async function resolveMarketplaceInstallLocation(
+export async function mergeEnabledPlugins(
   home: string,
-  marketplace: string,
-): Promise<string | undefined> {
-  const knownPath = path.join(home, ".claude", "plugins", "known_marketplaces.json")
+  cwd: string,
+): Promise<Record<string, EnablementDecision>> {
+  const layers: Array<{ file: string; scope: "user" | "project" }> = [
+    { file: path.join(home, ".claude", "settings.json"), scope: "user" },
+    { file: path.join(cwd, ".claude", "settings.json"), scope: "project" },
+    { file: path.join(cwd, ".claude", "settings.local.json"), scope: "project" },
+  ]
+
+  const merged: Record<string, EnablementDecision> = {}
+  for (const { file, scope } of layers) {
+    const ep = await readEnabledPlugins(file)
+    for (const [id, enabled] of Object.entries(ep)) {
+      merged[id] = { enabled, scope }
+    }
+  }
+  return merged
+}
+
+// ── Marketplace manifest resolution ───────────────────────────────────────────
+
+/** A single entry from `claude plugin marketplace list --json`. */
+interface MarketplaceEntry {
+  name: string
+  installLocation: string
+}
+
+/**
+ * Run `claude plugin marketplace list --json` and return a map of marketplace
+ * name → `installLocation`. Returns an empty map (and warns) on any failure —
+ * resolution then relies on the `claude plugin list --json` fallback.
+ */
+export async function listMarketplaces(
+  $: BunShell,
+  logger: Logger,
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>()
   let raw: string
   try {
-    raw = await fsPromises.readFile(knownPath, "utf8")
+    const out = await $`claude plugin marketplace list --json`.quiet().nothrow()
+    if (out.exitCode !== 0) {
+      logger.warn(
+        `\`claude plugin marketplace list --json\` exited ${out.exitCode}; marketplace path resolution unavailable this run`,
+        { fatalInStrict: false },
+      )
+      return result
+    }
+    raw = out.stdout.toString()
+  } catch (err) {
+    logger.warn(
+      `could not run \`claude plugin marketplace list --json\` (${err instanceof Error ? err.message : String(err)}); marketplace path resolution unavailable this run`,
+      { fatalInStrict: false },
+    )
+    return result
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    logger.warn(`could not parse \`claude plugin marketplace list --json\` output as JSON`, {
+      fatalInStrict: false,
+    })
+    return result
+  }
+  if (!Array.isArray(parsed)) return result
+
+  for (const entry of parsed) {
+    if (
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof (entry as MarketplaceEntry).name === "string" &&
+      typeof (entry as MarketplaceEntry).installLocation === "string"
+    ) {
+      const e = entry as MarketplaceEntry
+      result.set(e.name, e.installLocation)
+    }
+  }
+  return result
+}
+
+/**
+ * Read a marketplace manifest (`<installLocation>/.claude-plugin/marketplace.json`)
+ * and resolve a single plugin's on-disk directory.
+ *
+ * The manifest lists each plugin with a `source` field. When `source` is a string
+ * it is a path relative to the marketplace root (e.g. `./plugins/kio-jvm`), which
+ * resolves to `<installLocation>/<source>`. When `source` is an object
+ * (`git-subdir`, `url`, etc.) the plugin is cached elsewhere by Claude and cannot
+ * be resolved from the manifest alone — those return `undefined` so the caller
+ * falls back to the `claude plugin list --json` entry.
+ *
+ * Returns the absolute install path, or `undefined` when the manifest is missing,
+ * the plugin is not listed, or its `source` is not a simple relative path.
+ */
+export async function resolvePluginPathFromMarketplace(
+  installLocation: string,
+  pluginName: string,
+): Promise<string | undefined> {
+  const manifestPath = path.join(installLocation, ".claude-plugin", "marketplace.json")
+  let raw: string
+  try {
+    raw = await fsPromises.readFile(manifestPath, "utf8")
   } catch {
     return undefined
   }
@@ -62,159 +195,23 @@ async function resolveMarketplaceInstallLocation(
     return undefined
   }
   if (typeof parsed !== "object" || parsed === null) return undefined
-  const entry = (parsed as Record<string, unknown>)[marketplace]
-  if (typeof entry !== "object" || entry === null) return undefined
-  const loc = (entry as Record<string, unknown>)["installLocation"]
-  return typeof loc === "string" ? loc : undefined
+  const plugins = (parsed as Record<string, unknown>)["plugins"]
+  if (!Array.isArray(plugins)) return undefined
+
+  for (const p of plugins) {
+    if (typeof p !== "object" || p === null) continue
+    const entry = p as Record<string, unknown>
+    if (entry["name"] !== pluginName) continue
+    const source = entry["source"]
+    // Only simple relative-path sources are resolvable from the manifest.
+    if (typeof source !== "string") return undefined
+    const resolved = path.normalize(path.resolve(installLocation, source))
+    return resolved
+  }
+  return undefined
 }
 
-/**
- * Find the latest cached version directory for a plugin under
- * `~/.claude/plugins/cache/<marketplace>/<pluginName>/`. Returns `undefined` when
- * the directory is absent or has no version subdirectories.
- *
- * "Latest" is determined by `lastUpdated` from `installed_plugins.json` when
- * available; otherwise falls back to lexical sort of directory names (last wins).
- */
-async function resolveLatestCachedInstallPath(
-  home: string,
-  marketplace: string,
-  pluginName: string,
-  pluginId: string,
-): Promise<{ installPath: string; version: string } | undefined> {
-  // First try the standard cache location.
-  const cacheDir = path.join(home, ".claude", "plugins", "cache", marketplace, pluginName)
-  let entries: fs.Dirent[]
-  try {
-    entries = await fsPromises.readdir(cacheDir, { withFileTypes: true })
-  } catch {
-    return undefined
-  }
-
-  const versionDirs = entries
-    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
-    .map((e) => e.name)
-
-  if (versionDirs.length === 0) return undefined
-
-  // Prefer the version recorded in installed_plugins.json for this id (most reliable).
-  const installedPath = path.join(home, ".claude", "plugins", "installed_plugins.json")
-  try {
-    const raw = await fsPromises.readFile(installedPath, "utf8")
-    const data = JSON.parse(raw) as { plugins?: Record<string, Array<{ version: string; installPath: string; lastUpdated?: string }>> }
-    const entries = data.plugins?.[pluginId]
-    if (Array.isArray(entries) && entries.length > 0) {
-      // Pick the entry with the most recent lastUpdated.
-      const best = entries.reduce((a, b) =>
-        (a.lastUpdated ?? "") >= (b.lastUpdated ?? "") ? a : b
-      )
-      if (best.installPath && fs.existsSync(best.installPath)) {
-        return { installPath: best.installPath, version: best.version }
-      }
-    }
-  } catch {
-    // fall through to lexical sort
-  }
-
-  // Fall back: lexical sort, last entry wins (highest semver-ish string).
-  const version = versionDirs.sort().at(-1)!
-  return { installPath: path.join(cacheDir, version), version }
-}
-
-/**
- * Supplement the list returned by `claude plugin list --json` with any plugins
- * that appear as `enabledPlugins: true` in `settings.json` files (global and
- * project-level) but are absent from `cliPlugins`.
- *
- * This handles the case where a user manually edits `settings.json` to enable a
- * plugin without going through `claude plugin add` — the plugin is used by Claude
- * but never registered in `installed_plugins.json`, so it never appears in the
- * CLI output.
- *
- * For each missing id the function:
- *   1. Derives the marketplace name from the `name@marketplace` id format.
- *   2. Looks up the marketplace's `installLocation` via `known_marketplaces.json`.
- *   3. Finds the latest cached version under the standard cache path or the
- *      marketplace's `installLocation`.
- *   4. Synthesizes a `ClaudePlugin` entry and appends it to the list.
- *
- * Plugins that cannot be resolved (no cache, unknown marketplace) are skipped
- * with a debug-level log — not a warning, because a manually edited settings.json
- * may reference plugins not yet downloaded.
- */
-export async function supplementFromSettings(
-  cliPlugins: ClaudePlugin[],
-  cwd: string,
-  logger: Logger,
-  home: string = os.homedir(),
-): Promise<ClaudePlugin[]> {
-  const cliIds = new Set(cliPlugins.map((p) => p.id))
-  const extra: ClaudePlugin[] = []
-
-  // Collect enabledPlugins from global + project settings.json files.
-  const settingsPaths = [
-    path.join(home, ".claude", "settings.json"),
-    path.join(cwd, ".claude", "settings.json"),
-  ]
-
-  const enabledById: Record<string, { enabled: boolean; scope: "user" | "project" }> = {}
-  for (const [i, sp] of settingsPaths.entries()) {
-    const scope = i === 0 ? "user" : "project"
-    const ep = await readEnabledPlugins(sp)
-    for (const [id, enabled] of Object.entries(ep)) {
-      if (enabled) enabledById[id] = { enabled, scope }
-    }
-  }
-
-  for (const [id, { scope }] of Object.entries(enabledById)) {
-    if (cliIds.has(id)) continue // already provided by claude plugin list
-
-    // Parse `name@marketplace` — the last `@` segment is the marketplace.
-    const atIdx = id.lastIndexOf("@")
-    if (atIdx < 1) {
-      logger.info(`settings.json enabledPlugins: skipping malformed id "${id}" (no @marketplace suffix)`)
-      continue
-    }
-    const pluginName = id.slice(0, atIdx)
-    const marketplace = id.slice(atIdx + 1)
-
-    // Try to resolve the install path.
-    const resolved = await resolveLatestCachedInstallPath(home, marketplace, pluginName, id)
-    if (!resolved) {
-      // Try marketplace installLocation as a fallback (directory-source marketplaces).
-      const installLocation = await resolveMarketplaceInstallLocation(home, marketplace)
-      if (installLocation) {
-        const marketplacePath = path.join(installLocation, "plugins", pluginName)
-        if (fs.existsSync(marketplacePath)) {
-          logger.info(`settings.json supplement: resolved "${id}" via marketplace installLocation`)
-          extra.push({
-            id,
-            version: "unknown",
-            scope,
-            enabled: true,
-            installPath: marketplacePath,
-            projectPath: scope === "project" ? cwd : null,
-          })
-          continue
-        }
-      }
-      logger.info(`settings.json supplement: could not resolve installPath for "${id}"; skipping`)
-      continue
-    }
-
-    logger.info(`settings.json supplement: resolved "${id}" @ ${resolved.version} (not in claude plugin list)`)
-    extra.push({
-      id,
-      version: resolved.version,
-      scope,
-      enabled: true,
-      installPath: resolved.installPath,
-      projectPath: scope === "project" ? cwd : null,
-    })
-  }
-
-  return [...cliPlugins, ...extra]
-}
+// ── claude plugin list (fallback installPath source) ──────────────────────────
 
 /** Minimal duck-type guard for one `claude plugin list --json` entry. */
 function isClaudePlugin(value: unknown): value is ClaudePlugin {
@@ -234,9 +231,13 @@ function isClaudePlugin(value: unknown): value is ClaudePlugin {
 
 /**
  * Run `claude plugin list --json` via the plugin's Bun shell and parse the result.
- * Returns `null` (and warns) if the CLI is absent, exits non-zero, or emits unparseable
- * output — the hook then injects nothing but still succeeds (design §10). The warning is
- * strict-promotable, so `strict` turns a missing CLI into a hard error.
+ * Returns `null` (and warns) if the CLI is absent, exits non-zero, or emits
+ * unparseable output. A `null` result is non-fatal: resolution proceeds from the
+ * settings layers and marketplace manifest alone.
+ *
+ * This list is now a SUPPLEMENTARY source — it provides resolved `installPath`s
+ * for plugins added via `claude plugin add` (including ones cached in non-obvious
+ * locations), but it is no longer the sole source of truth for enablement.
  */
 export async function listClaudePlugins($: BunShell, logger: Logger): Promise<ClaudePlugin[] | null> {
   let raw: string
@@ -244,14 +245,16 @@ export async function listClaudePlugins($: BunShell, logger: Logger): Promise<Cl
     const out = await $`claude plugin list --json`.quiet().nothrow()
     if (out.exitCode !== 0) {
       logger.warn(
-        `\`claude plugin list --json\` exited ${out.exitCode}; injecting nothing this run`,
+        `\`claude plugin list --json\` exited ${out.exitCode}; relying on settings + marketplace resolution this run`,
+        { fatalInStrict: false },
       )
       return null
     }
     raw = out.stdout.toString()
   } catch (err) {
     logger.warn(
-      `could not run the \`claude\` CLI (${err instanceof Error ? err.message : String(err)}); is it on PATH? injecting nothing this run`,
+      `could not run the \`claude\` CLI (${err instanceof Error ? err.message : String(err)}); is it on PATH? relying on settings + marketplace resolution this run`,
+      { fatalInStrict: false },
     )
     return null
   }
@@ -260,29 +263,27 @@ export async function listClaudePlugins($: BunShell, logger: Logger): Promise<Cl
   try {
     parsed = JSON.parse(raw)
   } catch {
-    logger.warn(`could not parse \`claude plugin list --json\` output as JSON; injecting nothing this run`)
+    logger.warn(`could not parse \`claude plugin list --json\` output as JSON`, { fatalInStrict: false })
     return null
   }
   if (!Array.isArray(parsed)) {
-    logger.warn(`unexpected \`claude plugin list --json\` output (not an array); injecting nothing this run`)
+    logger.warn(`unexpected \`claude plugin list --json\` output (not an array)`, { fatalInStrict: false })
     return null
   }
 
   const plugins: ClaudePlugin[] = []
   for (const entry of parsed) {
     if (isClaudePlugin(entry)) plugins.push(entry)
-    // A malformed entry is treated like a component parse failure (§10): skip it and warn,
-    // and let `strict` promote it to a hard error (default fatalInStrict). This is deliberate
-    // and consistent with how strict treats other parse failures.
-    else logger.warn(`skipping a malformed \`claude plugin list\` entry`)
+    else logger.warn(`skipping a malformed \`claude plugin list\` entry`, { fatalInStrict: false })
   }
   return plugins
 }
 
+// ── Path comparison (kept for compatibility / diagnostics) ─────────────────────
+
 /**
  * Resolve a path to its canonical form, following symlinks. Falls back to
- * `path.resolve` when the path does not exist (e.g. a deleted project dir
- * stored in an old `claude plugin list` entry), so the result is always a
+ * `path.resolve` when the path does not exist, so the result is always a
  * deterministic string and never throws.
  */
 function realpathOrResolve(p: string): string {
@@ -296,36 +297,101 @@ function realpathOrResolve(p: string): string {
 /**
  * True when two filesystem paths refer to the same directory.
  *
- * Compares canonical (realpath) forms first so symlinked project paths
- * (common on macOS where `/tmp` → `/private/tmp`, and Linux dev setups)
- * are correctly identified as equal. Falls back to lexical `path.resolve`
- * comparison as a secondary check when one side doesn't exist yet.
+ * Compares canonical (realpath) forms first so symlinked paths are correctly
+ * identified as equal. Falls back to lexical `path.resolve` comparison as a
+ * secondary check when one side doesn't exist yet.
  */
 export function samePath(a: string | null | undefined, b: string): boolean {
   if (!a) return false
   return realpathOrResolve(a) === realpathOrResolve(b) || path.resolve(a) === path.resolve(b)
 }
 
+// ── Top-level resolution ───────────────────────────────────────────────────────
+
 /**
- * Apply the `mirror-claude` selection predicate (§5): an entry is selected when it is
- * enabled, not blocked, and either `user`-scoped (global) or bound to the current project.
- * The result is de-duplicated by `id` and sorted by `id` ascending so downstream naming is
- * deterministic regardless of `claude plugin list` ordering (§7).
+ * Resolve the full set of plugins to inject by mirroring Claude's own enablement
+ * logic, then resolving each enabled plugin's on-disk `installPath`.
+ *
+ * Resolution per enabled id (`name@marketplace`):
+ *   1. Marketplace manifest: look up `<marketplace>`'s `installLocation` from
+ *      `claude plugin marketplace list --json`, then resolve the plugin's relative
+ *      `source` in `<installLocation>/.claude-plugin/marketplace.json`.
+ *   2. Fallback: the matching `claude plugin list --json` entry's `installPath`
+ *      (covers git-subdir/url sources and other non-trivial caching).
+ *
+ * Plugins that cannot be resolved by either method are skipped with a non-fatal
+ * log. Blocked plugins (`config.blockedPlugins`) are excluded. Results are
+ * de-duplicated by id and sorted by id ascending for deterministic downstream
+ * naming.
  */
-export function selectEnabledPlugins(
-  plugins: ClaudePlugin[],
+export async function resolveEnabledPlugins(
+  $: BunShell,
   config: BridgeConfig,
   cwd: string,
-): ClaudePlugin[] {
+  logger: Logger,
+  home: string = os.homedir(),
+): Promise<ClaudePlugin[]> {
   const blocked = new Set(config.blockedPlugins)
+
+  // 1. Determine enablement from the merged settings layers.
+  const merged = await mergeEnabledPlugins(home, cwd)
+
+  // 2. Gather the supplementary sources for installPath resolution.
+  const marketplaces = await listMarketplaces($, logger)
+  const cliList = (await listClaudePlugins($, logger)) ?? []
+  const cliById = new Map<string, ClaudePlugin>()
+  for (const p of cliList) {
+    // Keep the first occurrence; the CLI may list one id under several projects.
+    if (!cliById.has(p.id)) cliById.set(p.id, p)
+  }
+
   const byId = new Map<string, ClaudePlugin>()
 
-  for (const p of plugins) {
-    if (!p.enabled) continue
-    if (blocked.has(p.id)) continue
-    const inScope = p.scope === "user" || samePath(p.projectPath, cwd)
-    if (!inScope) continue
-    if (!byId.has(p.id)) byId.set(p.id, p)
+  for (const [id, decision] of Object.entries(merged)) {
+    if (!decision.enabled) continue
+    if (blocked.has(id)) continue
+    if (byId.has(id)) continue
+
+    // Parse `name@marketplace` — the LAST `@` separates name from marketplace.
+    const atIdx = id.lastIndexOf("@")
+    if (atIdx < 1) {
+      logger.info(`enabledPlugins: skipping malformed id "${id}" (no @marketplace suffix)`)
+      continue
+    }
+    const pluginName = id.slice(0, atIdx)
+    const marketplace = id.slice(atIdx + 1)
+
+    // 2a. Try marketplace-manifest resolution first.
+    let installPath: string | undefined
+    let version = "unknown"
+    const installLocation = marketplaces.get(marketplace)
+    if (installLocation) {
+      const resolved = await resolvePluginPathFromMarketplace(installLocation, pluginName)
+      if (resolved && fs.existsSync(resolved)) installPath = resolved
+    }
+
+    // 2b. Fall back to the claude plugin list entry (resolved installPath + version).
+    const cliEntry = cliById.get(id)
+    if (!installPath && cliEntry && fs.existsSync(cliEntry.installPath)) {
+      installPath = cliEntry.installPath
+    }
+    if (cliEntry) version = cliEntry.version
+
+    if (!installPath) {
+      logger.info(
+        `enabledPlugins: could not resolve installPath for "${id}" (marketplace="${marketplace}"); skipping`,
+      )
+      continue
+    }
+
+    byId.set(id, {
+      id,
+      version,
+      scope: decision.scope,
+      enabled: true,
+      installPath,
+      projectPath: decision.scope === "project" ? cwd : null,
+    })
   }
 
   return [...byId.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
